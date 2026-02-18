@@ -1,0 +1,16 @@
+name: ml-lab-infra
+description: A personal ML lab
+runtime:
+  name: python
+  options:
+    toolchain: uv
+config:
+  pulumi:tags:
+    value:
+      pulumi:template: python
+packages:
+  local:
+    source: pulumi/pulumi/terraform-provider
+    version: 1.1.0
+    parameters:
+      - hashicorp/local
