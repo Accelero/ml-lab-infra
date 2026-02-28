@@ -1,9 +1,13 @@
 """The hub server configuration."""
 
+import textwrap
+
 import pulumi
 import pulumi_hcloud as hcloud
 import pulumi_tls as tls
-
+import pulumi_command as command
+from pathlib import Path
+from tailscale import hub_auth_key
 
 # Generate an SSH key pair for the hub server
 hub_ssh_private_key = tls.PrivateKey(
@@ -37,6 +41,13 @@ hub_firewall = hcloud.Firewall(
     ],
 )
 
+with Path("cloud-init.sh").open("r") as f:
+    script_body = f.read()
+
+user_data = hub_auth_key.key.apply(
+    lambda key: script_body.replace("${TAILSCALE_AUTH_KEY}", key),
+)
+
 hub_server = hcloud.Server(
     "hub",
     name="hub",
@@ -51,4 +62,20 @@ hub_server = hcloud.Server(
             "ipv6_enabled": True,
         },
     ],
+    user_data=user_data,
+)
+
+pyinfra_run = command.local.Command(
+    "pyinfra-setup",
+    # This triggers ONLY after the server is up and the IP is known
+    create=pulumi.Output.all(
+        hub_server.ipv4_address,
+        hub_ssh_private_key.private_key_openssh,
+    ).apply(
+        lambda args: (
+            f"python3 -c \"from my_pyinfra_file import setup_servers; setup_servers('{args[0]}', '{args[1]}')\""
+        )
+    ),
+    # Ensure this runs after the firewall is open and server is ready
+    opts=pulumi.ResourceOptions(depends_on=[hub_server, hub_firewall]),
 )
