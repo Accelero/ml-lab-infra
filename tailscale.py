@@ -37,4 +37,5 @@ hub_auth_key = tailscale.TailnetKey(
     expiry=3600,
     tags=["tag:hub-server"],
     description="Provisioning key for hub server",
+    recreate_if_invalid="always",
 )
