@@ -35,7 +35,7 @@ class PyinfraProvider(ResourceProvider):
 
     def create(self, props):
         # Import your setup function here or ensure it's in scope
-        from hub_deploy import setup_servers
+        from pyinfra.hub_deploy import setup_servers
 
         setup_servers(ip=props["ip"], ssh_key=props["ssh_key"])
         return CreateResult(id_=f"pyinfra-{props['ip']}", outs=props)

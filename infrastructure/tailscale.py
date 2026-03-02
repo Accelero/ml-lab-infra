@@ -28,14 +28,3 @@ import pulumi_tailscale as tailscale
 # }
 
 # tailnet_acl = tailscale.Acl("main-acl", acl=json.dumps(acl_policy))
-
-hub_auth_key = tailscale.TailnetKey(
-    "hub-auth-key",
-    reusable=False,
-    ephemeral=False,
-    preauthorized=True,
-    expiry=3600,
-    tags=["tag:hub-server"],
-    description="Provisioning key for hub server",
-    recreate_if_invalid="always",
-)

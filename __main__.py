@@ -1,4 +1,4 @@
 """ML Lab Infrastructure Pulumi Program."""
 
-import hub
+import infrastructure.hub_server
 # import tailscale
