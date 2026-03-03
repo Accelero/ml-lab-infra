@@ -1,11 +1,12 @@
-"""The hub server configuration."""
+"""The hub server setup."""
 
 from pathlib import Path
 
 import pulumi
 import pulumi_hcloud as hcloud
-import pulumi_tls as tls
 import pulumi_tailscale as tailscale
+import pulumi_tls as tls
+
 from resources import TailscaleDeviceCleanup
 
 # Generate an SSH key pair for the hub server
