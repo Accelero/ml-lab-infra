@@ -3,7 +3,6 @@
 import base64
 import json
 import urllib.request
-from typing import Optional
 
 import pulumi
 from pulumi import Input, ResourceOptions, log
@@ -31,7 +30,7 @@ class _TailscaleDeviceCleanupProvider(ResourceProvider):
                         "Authorization": f"Basic {b64}",
                         "Content-Type": "application/x-www-form-urlencoded",
                     },
-                )
+                ),
             ) as r:
                 token = json.load(r)["access_token"]
 

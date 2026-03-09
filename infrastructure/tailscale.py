@@ -4,6 +4,20 @@ import json
 
 import pulumi_tailscale as tailscale
 
+# Dedicated OAuth client for the Tailscale Kubernetes operator.
+# Needs auth_keys scope (to provision devices) and the k8s-operator tag.
+operator_oauth_client = tailscale.OauthClient(
+    "tailscale-operator-oauth-client",
+    description="tailscale kubernetes operator",
+    scopes=["auth_keys", "devices:core"],
+    tags=["tag:k8s-operator"],
+)
+
+tailnet_settings = tailscale.TailnetSettings(
+    "tailnet-settings",
+    https_enabled=True,
+)
+
 acl = tailscale.Acl(
     "tailscale-acl",
     acl=json.dumps(
@@ -40,9 +54,21 @@ acl = tailscale.Acl(
                     "dst": ["tag:hub-server", "tag:k8s"],
                     "ip": ["*"],
                 },
-                # skypilot-nodes can reach the server and each other
+                # skypilot-nodes can reach k8s services like MLflow and Skypilot-server
                 {
                     "src": ["tag:skypilot-node"],
+                    "dst": ["tag:k8s"],
+                    "ip": ["*"],
+                },
+                # admins can reach everything
+                {
+                    "src": ["autogroup:admin"],
+                    "dst": ["*"],
+                    "ip": ["*"],
+                },
+                # regular users can reach k8s services
+                {
+                    "src": ["autogroup:member"],
                     "dst": ["tag:k8s"],
                     "ip": ["*"],
                 },
