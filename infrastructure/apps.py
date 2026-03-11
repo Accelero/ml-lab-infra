@@ -1,15 +1,24 @@
-"""Helm releases and Kubernetes resources for the hub cluster apps."""
+"""Helm releases and Kubernetes resources for the hub cluster."""
+
+import hashlib
+from pathlib import Path
 
 import pulumi
 import pulumi_kubernetes as k8s
 import pulumi_random as random
 
 from infrastructure.k3s import k8s_provider
-from infrastructure.tailscale import operator_oauth_client
+from infrastructure.tailscale import (
+    operator_oauth_client,
+    skypilot_tailescale_oauth_client,
+)
+from resources import TailscaleDeviceCleanup
 
 _backup_config = pulumi.Config("backup")
 _mlflow_config = pulumi.Config("mlflow")
+_runpod_config = pulumi.Config("runpod")
 _tailnet = pulumi.Config("tailscale").require("tailnet")
+runpod_api_key = _runpod_config.require_secret("apiKey")
 
 _postgres_password_resource = random.RandomPassword(
     "postgres-password",
@@ -56,15 +65,10 @@ tailscale_operator_secret = k8s.core.v1.Secret(
         name="operator-oauth",
         namespace="tailscale",
     ),
-    string_data=pulumi.Output.all(
-        operator_oauth_client.id,
-        operator_oauth_client.key,
-    ).apply(
-        lambda args: {
-            "client_id": args[0],
-            "client_secret": args[1],
-        },
-    ),
+    string_data={
+        "client_id": operator_oauth_client.id,
+        "client_secret": operator_oauth_client.key,
+    },
     opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_tailscale]),
 )
 
@@ -72,7 +76,7 @@ tailscale_operator = k8s.helm.v3.Release(
     "tailscale-operator",
     name="tailscale-operator",
     chart="tailscale-operator",
-    namespace="tailscale",
+    namespace=ns_tailscale.metadata["name"],
     repository_opts=k8s.helm.v3.RepositoryOptsArgs(
         repo="https://pkgs.tailscale.com/helmcharts",
     ),
@@ -84,6 +88,15 @@ tailscale_operator = k8s.helm.v3.Release(
     opts=pulumi.ResourceOptions(
         provider=k8s_provider,
         depends_on=[tailscale_operator_secret],
+    ),
+)
+
+tailscale_operator_ts_cleanup = TailscaleDeviceCleanup(
+    "tailscale-operator-ts-cleanup",
+    hostname="tailscale-operator",
+    opts=pulumi.ResourceOptions(
+        delete_before_replace=True,
+        replacement_trigger=[tailscale_operator.id],
     ),
 )
 
@@ -124,7 +137,7 @@ postgres_pvc = k8s.core.v1.PersistentVolumeClaim(
 postgres_secret = k8s.core.v1.Secret(
     "postgres-secret",
     metadata=k8s.meta.v1.ObjectMetaArgs(name="postgres-secret", namespace="infra"),
-    string_data=postgres_password.apply(lambda pwd: {"postgres-password": pwd}),
+    string_data={"postgres-password": postgres_password},
     opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_infra]),
 )
 
@@ -132,7 +145,7 @@ postgres = k8s.helm.v3.Release(
     "postgres",
     name="postgres",
     chart="postgresql",
-    namespace="infra",
+    namespace=ns_infra.metadata["name"],
     repository_opts=k8s.helm.v3.RepositoryOptsArgs(
         repo="https://charts.bitnami.com/bitnami",
     ),
@@ -141,7 +154,7 @@ postgres = k8s.helm.v3.Release(
             "service": {"ports": {"postgresql": 5432}},
             "persistence": {
                 "enabled": True,
-                "existingClaim": "hub-postgres-pvc",
+                "existingClaim": postgres_pvc.metadata["name"],
             },
             "podSecurityContext": {
                 "enabled": True,
@@ -160,37 +173,28 @@ postgres = k8s.helm.v3.Release(
         "global": {
             "postgresql": {
                 "auth": {
-                    "existingSecret": "postgres-secret",
+                    "existingSecret": postgres_secret.metadata["name"],
                     "database": "mlflow_db",
                 },
             },
         },
     },
-    opts=pulumi.ResourceOptions(
-        provider=k8s_provider,
-        depends_on=[postgres_pvc, postgres_secret],
-    ),
+    opts=pulumi.ResourceOptions(provider=k8s_provider),
 )
 
 # ── Postgres S3 backup CronJob ────────────────────────────────────────────────────────
 
-backup_secret = k8s.core.v1.Secret(
-    "postgres-backup-secret",
+backup_k8s_secret = k8s.core.v1.Secret(
+    "postgres-backup-k8s-secret",
     metadata=k8s.meta.v1.ObjectMetaArgs(
         name="postgres-backup-secret",
         namespace="infra",
     ),
-    string_data=pulumi.Output.all(
-        postgres_password,
-        backup_s3_access_key,
-        backup_s3_secret_key,
-    ).apply(
-        lambda args: {
-            "POSTGRES_PASSWORD": args[0],
-            "S3_ACCESS_KEY_ID": args[1],
-            "S3_SECRET_ACCESS_KEY": args[2],
-        },
-    ),
+    string_data={
+        "POSTGRES_PASSWORD": postgres_password,
+        "S3_ACCESS_KEY_ID": backup_s3_access_key,
+        "S3_SECRET_ACCESS_KEY": backup_s3_secret_key,
+    },
     opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_infra]),
 )
 
@@ -257,27 +261,29 @@ postgres_backup = k8s.batch.v1.CronJob(
     ),
     opts=pulumi.ResourceOptions(
         provider=k8s_provider,
-        depends_on=[postgres, backup_secret],
+        depends_on=[postgres, backup_k8s_secret],
     ),
 )
 
 # ── MLflow ────────────────────────────────────────────────────────────────────────────
 
-mlflow_s3_secret = k8s.core.v1.Secret(
-    "mlflow-s3-secret",
+mlflow_s3_k8s_secret = k8s.core.v1.Secret(
+    "mlflow-s3-k8s-secret",
     metadata=k8s.meta.v1.ObjectMetaArgs(name="mlflow-s3-secret", namespace="app"),
-    string_data=pulumi.Output.all(mlflow_s3_access_key, mlflow_s3_secret_key).apply(
-        lambda args: {"access-key-id": args[0], "secret-access-key": args[1]},
-    ),
+    string_data={
+        "access-key-id": mlflow_s3_access_key,
+        "secret-access-key": mlflow_s3_secret_key,
+    },
     opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_app]),
 )
 
-mlflow_db_secret = k8s.core.v1.Secret(
-    "mlflow-db-secret",
+mlflow_postgres_k8s_secret = k8s.core.v1.Secret(
+    "mlflow-db-k8s-secret",
     metadata=k8s.meta.v1.ObjectMetaArgs(name="mlflow-db-secret", namespace="app"),
-    string_data=postgres_password.apply(
-        lambda pwd: {"username": "postgres", "password": pwd},
-    ),
+    string_data={
+        "username": "postgres",
+        "password": postgres_password,
+    },
     opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_app]),
 )
 
@@ -285,7 +291,7 @@ mlflow = k8s.helm.v3.Release(
     "mlflow",
     name="mlflow",
     chart="mlflow",
-    namespace="app",
+    namespace=ns_app.metadata["name"],
     repository_opts=k8s.helm.v3.RepositoryOptsArgs(
         repo="https://community-charts.github.io/helm-charts",
     ),
@@ -298,7 +304,7 @@ mlflow = k8s.helm.v3.Release(
                 "database": "mlflow_db",
             },
             "existingDatabaseSecret": {
-                "name": "mlflow-db-secret",
+                "name": mlflow_postgres_k8s_secret.metadata["name"],
                 "usernameKey": "username",
                 "passwordKey": "password",
             },
@@ -308,7 +314,7 @@ mlflow = k8s.helm.v3.Release(
                 "enabled": True,
                 "bucket": mlflow_s3_bucket,
                 "existingSecret": {
-                    "name": "mlflow-s3-secret",
+                    "name": mlflow_s3_k8s_secret.metadata["name"],
                     "keyOfAccessKeyId": "access-key-id",
                     "keyOfSecretAccessKey": "secret-access-key",
                 },
@@ -326,30 +332,29 @@ mlflow = k8s.helm.v3.Release(
             "className": "tailscale",
             "hosts": [
                 {
-                    "host": "mlflow",
+                    "host": "mlflow-test",
                     "paths": [{"path": "/", "pathType": "ImplementationSpecific"}],
                 },
             ],
-            "tls": [{"hosts": ["mlflow"], "secretName": "mlflow-tls"}],
+            "tls": [{"hosts": ["mlflow-test"], "secretName": "mlflow-tls"}],
         },
     },
     opts=pulumi.ResourceOptions(
         provider=k8s_provider,
-        depends_on=[
-            postgres,
-            ns_app,
-            tailscale_operator,
-            mlflow_s3_secret,
-            mlflow_db_secret,
-        ],
+        depends_on=[postgres, tailscale_operator],
+        replace_with=[mlflow_s3_k8s_secret],
+        delete_before_replace=True,
     ),
 )
 
-# ── SkyPilot API ──────────────────────────────────────────────────────────────
+# ── SkyPilot API ──────────────────────────────────────────────────────────────────────
 
-skypilot_db_secret = k8s.core.v1.Secret(
-    "skypilot-db-secret",
-    metadata=k8s.meta.v1.ObjectMetaArgs(name="skypilot-db-secret", namespace="app"),
+skypilot_postgres_k8s_secret = k8s.core.v1.Secret(
+    "skypilot-postgres-k8s-secret",
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="skypilot-postgres-secret",
+        namespace="app",
+    ),
     string_data=postgres_password.apply(
         lambda pwd: {
             "connection_string": f"postgresql://postgres:{pwd}@postgres-postgresql.infra.svc.cluster.local:5432/skypilot_db",
@@ -358,34 +363,135 @@ skypilot_db_secret = k8s.core.v1.Secret(
     opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_app]),
 )
 
+# RunPod credentials
+runpod_credentials_k8s_secret = k8s.core.v1.Secret(
+    "runpod-credentials-k8s-secret",
+    metadata=k8s.meta.v1.ObjectMetaArgs(name="runpod-credentials", namespace="app"),
+    string_data={"api_key": runpod_api_key},
+    opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_app]),
+)
+
+# Tailscale OAuth client for the admin policy. The policy calls the
+# Tailscale API at job-submission time to generate a fresh one-time auth key.
+skypilot_tailscale_k8s_secret = k8s.core.v1.Secret(
+    "skypilot-tailscale-k8s-secret",
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="skypilot-tailscale-secret",
+        namespace="app",
+    ),
+    string_data={
+        "oauth_client_id": skypilot_tailescale_oauth_client.id,
+        "oauth_client_secret": skypilot_tailescale_oauth_client.key,
+    },
+    opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_app]),
+)
+
+# Admin policy as ConfigMap so the policy is a real file in the cluster and
+# mounted read-only into the SkyPilot API server at /sky-policies/.
+skypilot_policy_configmap = k8s.core.v1.ConfigMap(
+    "skypilot-policies-configmap",
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="skypilot-policies",
+        namespace="app",
+        annotations={"pulumi.com/patchForce": "true"},
+    ),
+    data={
+        "skypilot_policies.py": Path("scripts/skypilot_policies.py").read_text(),
+        "tailscale_setup.sh": Path("scripts/tailscale_setup.sh").read_text(),
+    },
+    opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_app]),
+)
+
 skypilot = k8s.helm.v3.Release(
-    "skypilot-api",
-    name="skypilot-api",
+    "skypilot",
+    name="skypilot",
     chart="skypilot",
-    namespace="app",
+    namespace=ns_app.metadata["name"],
     repository_opts=k8s.helm.v3.RepositoryOptsArgs(
         repo="https://helm.skypilot.co",
     ),
     values={
         "apiService": {
             "skipResourceCheck": True,
-            "dbConnectionSecretName": "skypilot-db-secret",
+            "dbConnectionSecretName": skypilot_postgres_k8s_secret.metadata["name"],
+            "podAnnotations": {
+                "checksum/skypilot-policies": hashlib.sha256(
+                    (
+                        Path("scripts/skypilot_policies.py").read_text()
+                        + Path("scripts/tailscale_setup.sh").read_text()
+                    ).encode()
+                ).hexdigest(),
+            },  # trigger update of the API server whenever the policy ConfigMap changes
+            "extraEnvs": [
+                {
+                    "name": "TAILSCALE_OAUTH_CLIENT_ID",
+                    "valueFrom": {
+                        "secretKeyRef": {
+                            "name": skypilot_tailscale_k8s_secret.metadata["name"],
+                            "key": "oauth_client_id",
+                        },
+                    },
+                },
+                {
+                    "name": "TAILSCALE_OAUTH_CLIENT_SECRET",
+                    "valueFrom": {
+                        "secretKeyRef": {
+                            "name": skypilot_tailscale_k8s_secret.metadata["name"],
+                            "key": "oauth_client_secret",
+                        },
+                    },
+                },
+                {
+                    "name": "TAILSCALE_TAILNET",
+                    "value": _tailnet,
+                },
+                {
+                    "name": "PYTHONPATH",
+                    "value": "/sky-policies",
+                },
+            ],
+            "extraVolumes": [
+                {
+                    "name": "sky-policies",
+                    "configMap": {"name": "skypilot-policies"},
+                },
+            ],
+            "extraVolumeMounts": [
+                {
+                    "name": "sky-policies",
+                    "mountPath": "/sky-policies",
+                    "readOnly": True,
+                },
+            ],
             "resources": {
                 "requests": {"cpu": "500m", "memory": "500Mi"},
-                # "limits": {"cpu": "500m", "memory": "1Gi"},
+                "limits": {"cpu": "1", "memory": "2Gi"},
             },
+        },
+        "runpodCredentials": {
+            "enabled": True,
+            "runpodSecretName": runpod_credentials_k8s_secret.metadata["name"],
         },
         "ingress-nginx": {"enabled": False},
         "ingress": {
             "enabled": True,
             "ingressClassName": "tailscale",
-            "host": "skypilot",
+            "host": "skypilot-test",
             "path": "/",
             "tls": {"enabled": True, "secretName": "skypilot-tls"},
         },
     },
     opts=pulumi.ResourceOptions(
         provider=k8s_provider,
-        depends_on=[postgres, ns_app, tailscale_operator, skypilot_db_secret],
+        depends_on=[
+            postgres,
+            tailscale_operator,
+        ],
+        replace_with=[
+            # skypilot_policy_configmap,
+            runpod_credentials_k8s_secret,
+            skypilot_tailscale_k8s_secret,
+        ],
+        delete_before_replace=True,
     ),
 )

@@ -1,0 +1,32 @@
+# SkyPilot integration-test task.
+#
+# Tailscale is injected automatically by the server-side admin policy.
+# No Tailscale auth key or Tailscale setup steps are needed here.
+#
+# Required env vars (pass via `sky launch --env KEY=VALUE` or the pytest fixture)
+
+name: mlflow-integration-test
+
+resources:
+  infra: runpod/ro
+  any_of:
+    - accelerators: RTX3090:1
+    - accelerators: RTX4090:1
+    - accelerators: RTX5090:1
+    - accelerators: RTXA2000:1
+    - accelerators: RTXA4000:1
+    - accelerators: A40:1
+
+envs:
+  MLFLOW_TRACKING_URI: ""
+
+file_mounts:
+  ~/mlflow_train.py: tests/jobs/mlflow_train.py
+
+setup: |
+  set -euo pipefail
+  pip install --quiet --ignore-installed mlflow boto3
+
+run: |
+  set -euo pipefail
+  python ~/mlflow_train.py
