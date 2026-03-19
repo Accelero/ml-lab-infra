@@ -41,19 +41,10 @@ def _pulumi_config(key: str, *, secret: bool = False) -> str:
     return result.stdout.strip()
 
 
-_TAILNET = _pulumi_config("tailscale:tailnet")
-_MLFLOW_S3_ENDPOINT = _pulumi_config("mlflow:s3Endpoint")
-_MLFLOW_S3_ACCESS_KEY = _pulumi_config("mlflow:s3AccessKey")
-_MLFLOW_S3_SECRET_KEY = _pulumi_config("mlflow:s3SecretKey")
-
-
 if TYPE_CHECKING:
     from collections.abc import Generator
 
     from mlflow.entities import Run
-
-MLFLOW_TRACKING_URI: str = f"https://mlflow-test.{_TAILNET}"
-SKYPILOT_API_SERVER_ENDPOINT: str = f"https://skypilot-test.{_TAILNET}"
 
 EXPERIMENT_NAME = "skypilot-integration-test"
 CLUSTER_NAME = "mlflow-test"
@@ -61,20 +52,31 @@ TASK_YAML = pathlib.Path(__file__).parent / "jobs" / "mlflow_train.yaml"
 _SKY = shutil.which("sky") or "sky"
 
 
-def _sky_env() -> dict[str, str]:
-    """Return os.environ extended with the SkyPilot API server endpoint."""
-    return {**os.environ, "SKYPILOT_API_SERVER_ENDPOINT": SKYPILOT_API_SERVER_ENDPOINT}
+@pytest.fixture(scope="module")
+def config() -> dict[str, str]:
+    """Fetch Pulumi config at test runtime, not collection time."""
+    tailnet = _pulumi_config("tailscale:tailnet")
+    return {
+        "tailnet": tailnet,
+        "mlflow_tracking_uri": f"https://mlflow-test.{tailnet}",
+        "skypilot_endpoint": f"https://skypilot-test.{tailnet}",
+        "s3_endpoint": _pulumi_config("mlflow:s3Endpoint"),
+        "s3_access_key": _pulumi_config("mlflow:s3AccessKey"),
+        "s3_secret_key": _pulumi_config("mlflow:s3SecretKey"),
+    }
 
 
 @pytest.fixture(scope="module")
-def launched_cluster() -> Generator[subprocess.CompletedProcess[str]]:
+def launched_cluster(
+    config: dict[str, str],
+) -> Generator[subprocess.CompletedProcess[str]]:
     """Submit the SkyPilot job, yield the CompletedProcess, then tear down.
 
     ``sky launch`` (without ``--detach-run``) blocks until the job finishes,
     so the fixture returns only after the remote training script has exited.
     The cluster is always torn down in the finaliser, even on failure.
     """
-    env = _sky_env()
+    env = {**os.environ, "SKYPILOT_API_SERVER_ENDPOINT": config["skypilot_endpoint"]}
     result = subprocess.run(  # noqa: S603
         [
             _SKY,
@@ -83,13 +85,13 @@ def launched_cluster() -> Generator[subprocess.CompletedProcess[str]]:
             "--cluster",
             CLUSTER_NAME,
             "--env",
-            f"MLFLOW_TRACKING_URI={MLFLOW_TRACKING_URI}",
+            f"MLFLOW_TRACKING_URI={config['mlflow_tracking_uri']}",
             "--env",
-            f"AWS_ACCESS_KEY_ID={_MLFLOW_S3_ACCESS_KEY}",
+            f"AWS_ACCESS_KEY_ID={config['s3_access_key']}",
             "--env",
-            f"AWS_SECRET_ACCESS_KEY={_MLFLOW_S3_SECRET_KEY}",
+            f"AWS_SECRET_ACCESS_KEY={config['s3_secret_key']}",
             "--env",
-            f"MLFLOW_S3_ENDPOINT_URL={_MLFLOW_S3_ENDPOINT}",
+            f"MLFLOW_S3_ENDPOINT_URL={config['s3_endpoint']}",
             str(TASK_YAML),
         ],
         env=env,
@@ -108,12 +110,16 @@ def launched_cluster() -> Generator[subprocess.CompletedProcess[str]]:
 
 
 @pytest.fixture(scope="module")
-def mlflow_run(launched_cluster: subprocess.CompletedProcess[str]) -> Run:  # noqa: ARG001
+def mlflow_run(
+    config: dict[str, str],
+    launched_cluster: subprocess.CompletedProcess[str],  # noqa: ARG001
+) -> Run:
     """Return the most-recent MLflow run from the integration-test experiment."""
-    client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
+    client = MlflowClient(tracking_uri=config["mlflow_tracking_uri"])
     experiment = client.get_experiment_by_name(EXPERIMENT_NAME)
     assert experiment is not None, (
-        f"Experiment '{EXPERIMENT_NAME}' not found in MLflow at {MLFLOW_TRACKING_URI}"
+        f"Experiment '{EXPERIMENT_NAME}' not found in MLflow"
+        f" at {config['mlflow_tracking_uri']}"
     )
     runs = client.search_runs(
         [experiment.experiment_id],
@@ -146,9 +152,12 @@ def test_mlflow_run_has_params_and_metrics(mlflow_run: Run) -> None:
     assert metrics["accuracy"] == pytest.approx(0.9, abs=1e-6)
 
 
-def test_mlflow_artifact_stored_in_s3(mlflow_run: Run) -> None:
+def test_mlflow_artifact_stored_in_s3(
+    config: dict[str, str],
+    mlflow_run: Run,
+) -> None:
     """model/model_weights.txt must be listed under the run's artifact store (S3)."""
-    client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
+    client = MlflowClient(tracking_uri=config["mlflow_tracking_uri"])
     artifacts = client.list_artifacts(mlflow_run.info.run_id, path="model")
     artifact_paths = [a.path for a in artifacts]
 

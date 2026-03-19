@@ -1,4 +1,4 @@
-"""K3s installation and kubeconfig export for the hub server."""
+"""Cluster installation and kubeconfig export for the hub server."""
 
 import pulumi
 import pulumi_command as command
@@ -19,8 +19,8 @@ _conn = command.remote.ConnectionArgs(
 )
 
 # Install k3s bound to the Tailscale interface.
-k3s_install = command.remote.Command(
-    "k3s-install",
+hub_cluster_install = command.remote.Command(
+    "hub-cluster-install",
     connection=_conn,
     create=(
         "TS_IP=$(tailscale ip -4) && "
@@ -38,26 +38,26 @@ k3s_install = command.remote.Command(
 
 # Fetch the kubeconfig and patch 127.0.0.1 → Tailscale IP so it's
 # reachable from outside the server.
-k3s_kubeconfig_cmd = command.remote.Command(
-    "k3s-kubeconfig",
+hub_kubeconfig_cmd = command.remote.Command(
+    "hub-kubeconfig",
     connection=_conn,
     create=(
         "TS_IP=$(tailscale ip -4) && "
         'sed "s/127.0.0.1/$TS_IP/g" /etc/rancher/k3s/k3s.yaml'
     ),
-    triggers=[k3s_install.id],
+    triggers=[hub_cluster_install.id],
     opts=pulumi.ResourceOptions(
-        depends_on=[k3s_install],
+        depends_on=[hub_cluster_install],
         additional_secret_outputs=["stdout"],
     ),
 )
 
-k3s_kubeconfig: pulumi.Output[str] = k3s_kubeconfig_cmd.stdout.apply(
+hub_kubeconfig: pulumi.Output[str] = hub_kubeconfig_cmd.stdout.apply(
     pulumi.Output.secret,
 )
-pulumi.export("k3s_kubeconfig", k3s_kubeconfig)
+pulumi.export("hub_kubeconfig", hub_kubeconfig)
 
 k8s_provider = k8s.Provider(
     "hub-k8s",
-    kubeconfig=k3s_kubeconfig,
+    kubeconfig=hub_kubeconfig,
 )

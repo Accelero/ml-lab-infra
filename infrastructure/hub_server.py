@@ -9,6 +9,10 @@ import pulumi_tls as tls
 
 from resources import TailscaleDeviceCleanup
 
+_hcloud_config = pulumi.Config("hub_server")
+_server_type = _hcloud_config.get("serverType") or "cx33"
+_location = _hcloud_config.get("location") or "fsn1"
+
 # Generate an SSH key pair for the hub server
 hub_ssh_key = tls.PrivateKey(
     "hub-ssh-private-key",
@@ -65,8 +69,8 @@ hub_server = hcloud.Server(
     "hub-server",
     name="hub-server",
     image="debian-13",
-    server_type="cx23",
-    location="nbg1",
+    server_type=_server_type,
+    location=_location,
     ssh_keys=[hub_hcloud_ssh_key.id],
     firewall_ids=[hub_firewall.id],
     public_nets=[

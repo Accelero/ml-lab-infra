@@ -10,6 +10,13 @@ while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
    sleep 5
 done
 
+# Configure 2GB swap file
+fallocate -l 2G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
 # Install base dependencies
 apt update -y
 apt install -y curl ca-certificates
