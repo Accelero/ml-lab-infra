@@ -15,8 +15,8 @@ operator_oauth_client = tailscale.OauthClient(
 
 # OAuth client for the SkyPilot API server.
 # Needs auth_keys scope (to provision devices) and the skypilot-server tag.
-skypilot_tailescale_oauth_client = tailscale.OauthClient(
-    "skypilot-tailscale-oauth-client",
+skypilot_ts_oauth_client = tailscale.OauthClient(
+    "skypilot-ts-oauth-client",
     description="SkyPilot API server",
     scopes=["auth_keys"],
     tags=["tag:skypilot-server"],

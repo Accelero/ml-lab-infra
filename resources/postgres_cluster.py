@@ -25,6 +25,7 @@ _TIMEOUT = 600  # 10 minutes
 _GROUP = "postgresql.cnpg.io"
 _VERSION = "v1"
 _HTTP_NOT_FOUND = 404
+_HTTP_CONFLICT = 409
 _SCHEDULED_BACKUP_NAME = "postgres-scheduled-backup"
 
 
@@ -123,10 +124,17 @@ def _cluster_manifest(props: dict, *, restore: bool) -> dict:
         }
         extra = {}
 
+    annotations = (
+        {"cnpg.io/skipEmptyWalArchiveCheck": "enabled"} if restore else {}
+    )
     return {
         "apiVersion": f"{_GROUP}/{_VERSION}",
         "kind": "Cluster",
-        "metadata": {"name": _CLUSTER_NAME, "namespace": _NAMESPACE},
+        "metadata": {
+            "name": _CLUSTER_NAME,
+            "namespace": _NAMESPACE,
+            "annotations": annotations,
+        },
         "spec": {
             "instances": 1,
             "bootstrap": bootstrap,
@@ -226,6 +234,12 @@ class _Provider(ResourceProvider):
                 )
                 break
             except kubernetes.client.exceptions.ApiException as e:
+                if e.status == _HTTP_CONFLICT:
+                    log.info(
+                        "Cluster already exists (prior partial create),"
+                        " waiting for readiness...",
+                    )
+                    break
                 if e.status == _HTTP_NOT_FOUND and time.monotonic() < deadline:
                     log.info("CNPG CRDs not registered yet, retrying in 10s...")
                     time.sleep(10)

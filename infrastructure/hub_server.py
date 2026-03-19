@@ -15,16 +15,17 @@ _location = _hcloud_config.get("location") or "fsn1"
 
 # Generate an SSH key pair for the hub server
 hub_ssh_key = tls.PrivateKey(
-    "hub-ssh-private-key",
+    "hub-ssh-key",
     algorithm="ED25519",
 )
 hub_ssh_private_key = hub_ssh_key.private_key_openssh
 hub_ssh_public_key = hub_ssh_key.public_key_openssh
 
 hub_hcloud_ssh_key = hcloud.SshKey(
-    "hub-ssh-key",
+    "hub-hcloud-ssh-key",
     name="hub-ssh-key",
     public_key=hub_ssh_public_key,
+    opts=pulumi.ResourceOptions(parent=hub_ssh_key),
 )
 
 pulumi.export("hub_ssh_private_key", hub_ssh_private_key)
@@ -32,7 +33,7 @@ pulumi.export("hub_ssh_public_key", hub_ssh_public_key)
 
 # Generate a Tailscale auth key for the hub server
 hub_ts_auth_key = tailscale.TailnetKey(
-    "hub-auth-key",
+    "hub-ts-auth-key",
     reusable=False,
     ephemeral=False,
     preauthorized=True,
@@ -86,6 +87,7 @@ hub_server_ts_cleanup = TailscaleDeviceCleanup(
     "hub-server-ts-cleanup",
     hostname=hub_server.name,
     opts=pulumi.ResourceOptions(
+        parent=hub_server,
         delete_before_replace=True,
         replacement_trigger=[hub_server.id],
     ),

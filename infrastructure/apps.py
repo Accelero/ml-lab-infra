@@ -7,10 +7,14 @@ import pulumi
 import pulumi_kubernetes as k8s
 import pulumi_random as random
 
-from infrastructure.hub_cluster import hub_kubeconfig, k8s_provider
+from infrastructure.hub_cluster import (
+    hub_k8s_provider,
+    hub_kubeconfig,
+    hub_kubeconfig_cmd,
+)
 from infrastructure.tailscale import (
     operator_oauth_client,
-    skypilot_tailescale_oauth_client,
+    skypilot_ts_oauth_client,
 )
 from resources import PostgresCluster, S3Config, TailscaleDeviceCleanup
 
@@ -25,21 +29,21 @@ MLFLOW_USER = "mlflow"
 SKYPILOT_USER = "skypilot"
 runpod_api_key = _runpod_config.require_secret("apiKey")
 
-_mlflow_password_resource = random.RandomPassword(
-    "mlflow-user-password",
+_mlflow_postgres_password = random.RandomPassword(
+    "mlflow-postgres-password",
     length=32,
     special=False,
     opts=pulumi.ResourceOptions(additional_secret_outputs=["result"]),
 )
-mlflow_user_password = _mlflow_password_resource.result
+mlflow_user_password = _mlflow_postgres_password.result
 
-_skypilot_password_resource = random.RandomPassword(
-    "skypilot-user-password",
+_skypilot_postgres_password = random.RandomPassword(
+    "skypilot-postgres-password",
     length=32,
     special=False,
     opts=pulumi.ResourceOptions(additional_secret_outputs=["result"]),
 )
-skypilot_user_password = _skypilot_password_resource.result
+skypilot_user_password = _skypilot_postgres_password.result
 
 backup_s3_endpoint = _backup_config.require("s3Endpoint")
 backup_s3_bucket = _backup_config.require("s3BucketName")
@@ -56,17 +60,17 @@ mlflow_s3_secret_key = _mlflow_config.require_secret("s3SecretKey")
 ns_tailscale = k8s.core.v1.Namespace(
     "ns-tailscale",
     metadata=k8s.meta.v1.ObjectMetaArgs(name="tailscale"),
-    opts=pulumi.ResourceOptions(provider=k8s_provider),
+    opts=pulumi.ResourceOptions(parent=hub_kubeconfig_cmd, provider=hub_k8s_provider),
 )
 ns_infra = k8s.core.v1.Namespace(
     "ns-infra",
     metadata=k8s.meta.v1.ObjectMetaArgs(name="infra"),
-    opts=pulumi.ResourceOptions(provider=k8s_provider),
+    opts=pulumi.ResourceOptions(parent=hub_kubeconfig_cmd, provider=hub_k8s_provider),
 )
 ns_app = k8s.core.v1.Namespace(
     "ns-app",
     metadata=k8s.meta.v1.ObjectMetaArgs(name="app"),
-    opts=pulumi.ResourceOptions(provider=k8s_provider),
+    opts=pulumi.ResourceOptions(parent=hub_kubeconfig_cmd, provider=hub_k8s_provider),
 )
 
 # ── Tailscale operator ────────────────────────────────────────────────────────────────
@@ -81,7 +85,10 @@ tailscale_operator_secret = k8s.core.v1.Secret(
         "client_id": operator_oauth_client.id,
         "client_secret": operator_oauth_client.key,
     },
-    opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_tailscale]),
+    opts=pulumi.ResourceOptions(
+        parent=ns_tailscale,
+        provider=hub_k8s_provider,
+    ),
 )
 
 tailscale_operator = k8s.helm.v3.Release(
@@ -98,7 +105,8 @@ tailscale_operator = k8s.helm.v3.Release(
         },
     },
     opts=pulumi.ResourceOptions(
-        provider=k8s_provider,
+        parent=ns_tailscale,
+        provider=hub_k8s_provider,
         depends_on=[tailscale_operator_secret],
     ),
 )
@@ -107,6 +115,7 @@ tailscale_operator_ts_cleanup = TailscaleDeviceCleanup(
     "tailscale-operator-ts-cleanup",
     hostname="tailscale-operator",
     opts=pulumi.ResourceOptions(
+        parent=tailscale_operator,
         delete_before_replace=True,
         replacement_trigger=[tailscale_operator.id],
     ),
@@ -117,7 +126,7 @@ tailscale_operator_ts_cleanup = TailscaleDeviceCleanup(
 ns_cnpg = k8s.core.v1.Namespace(
     "ns-cnpg",
     metadata=k8s.meta.v1.ObjectMetaArgs(name="cnpg-system"),
-    opts=pulumi.ResourceOptions(provider=k8s_provider),
+    opts=pulumi.ResourceOptions(parent=hub_kubeconfig_cmd, provider=hub_k8s_provider),
 )
 
 cnpg_operator = k8s.helm.v3.Release(
@@ -129,15 +138,15 @@ cnpg_operator = k8s.helm.v3.Release(
         repo="https://cloudnative-pg.github.io/charts",
     ),
     opts=pulumi.ResourceOptions(
-        provider=k8s_provider,
-        depends_on=[ns_cnpg],
+        parent=ns_cnpg,
+        provider=hub_k8s_provider,
     ),
 )
 
 # ── Postgres (CloudNativePG) ──────────────────────────────────────────────────────────
 
 mlflow_role_secret = k8s.core.v1.Secret(
-    "mlflow-postgres-credentials",
+    "mlflow-role-secret",
     metadata=k8s.meta.v1.ObjectMetaArgs(
         name="mlflow-postgres-credentials",
         namespace="infra",
@@ -146,11 +155,11 @@ mlflow_role_secret = k8s.core.v1.Secret(
         "username": MLFLOW_USER,
         "password": mlflow_user_password,
     },
-    opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_infra]),
+    opts=pulumi.ResourceOptions(parent=ns_infra, provider=hub_k8s_provider),
 )
 
 skypilot_role_secret = k8s.core.v1.Secret(
-    "skypilot-postgres-credentials",
+    "skypilot-role-secret",
     metadata=k8s.meta.v1.ObjectMetaArgs(
         name="skypilot-postgres-credentials",
         namespace="infra",
@@ -159,7 +168,7 @@ skypilot_role_secret = k8s.core.v1.Secret(
         "username": SKYPILOT_USER,
         "password": skypilot_user_password,
     },
-    opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_infra]),
+    opts=pulumi.ResourceOptions(parent=ns_infra, provider=hub_k8s_provider),
 )
 
 postgres_backup_secret = k8s.core.v1.Secret(
@@ -172,7 +181,7 @@ postgres_backup_secret = k8s.core.v1.Secret(
         "ACCESS_KEY_ID": backup_s3_access_key,
         "ACCESS_SECRET_KEY": backup_s3_secret_key,
     },
-    opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_infra]),
+    opts=pulumi.ResourceOptions(parent=ns_infra, provider=hub_k8s_provider),
 )
 
 postgres = PostgresCluster(
@@ -186,9 +195,9 @@ postgres = PostgresCluster(
     ),
     databases=[MLFLOW_DB, SKYPILOT_DB],
     opts=pulumi.ResourceOptions(
+        parent=ns_infra,
         depends_on=[
             cnpg_operator,
-            ns_infra,
             mlflow_role_secret,
             skypilot_role_secret,
             postgres_backup_secret,
@@ -211,8 +220,8 @@ postgres_scheduled_backup = k8s.apiextensions.CustomResource(
         "cluster": {"name": "postgres"},
     },
     opts=pulumi.ResourceOptions(
-        provider=k8s_provider,
-        depends_on=[postgres],
+        parent=postgres,
+        provider=hub_k8s_provider,
     ),
 )
 
@@ -225,17 +234,17 @@ mlflow_s3_secret = k8s.core.v1.Secret(
         "access-key-id": mlflow_s3_access_key,
         "secret-access-key": mlflow_s3_secret_key,
     },
-    opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_app]),
+    opts=pulumi.ResourceOptions(parent=ns_app, provider=hub_k8s_provider),
 )
 
-mlflow_postgres_secret = k8s.core.v1.Secret(
+mlflow_role_secret = k8s.core.v1.Secret(
     "mlflow-postgres-secret",
     metadata=k8s.meta.v1.ObjectMetaArgs(name="mlflow-db-secret", namespace="app"),
     string_data={
         "username": MLFLOW_USER,
         "password": mlflow_user_password,
     },
-    opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_app]),
+    opts=pulumi.ResourceOptions(parent=ns_app, provider=hub_k8s_provider),
 )
 
 mlflow = k8s.helm.v3.Release(
@@ -255,7 +264,7 @@ mlflow = k8s.helm.v3.Release(
                 "database": MLFLOW_DB,
             },
             "existingDatabaseSecret": {
-                "name": mlflow_postgres_secret.metadata["name"],
+                "name": mlflow_role_secret.metadata["name"],
                 "usernameKey": "username",
                 "passwordKey": "password",
             },
@@ -291,7 +300,8 @@ mlflow = k8s.helm.v3.Release(
         },
     },
     opts=pulumi.ResourceOptions(
-        provider=k8s_provider,
+        parent=ns_app,
+        provider=hub_k8s_provider,
         depends_on=[postgres, tailscale_operator],
         replace_with=[mlflow_s3_secret],
         delete_before_replace=True,
@@ -300,25 +310,28 @@ mlflow = k8s.helm.v3.Release(
 
 # ── SkyPilot API ──────────────────────────────────────────────────────────────────────
 
-skypilot_postgres_secret = k8s.core.v1.Secret(
+skypilot_role_secret = k8s.core.v1.Secret(
     "skypilot-postgres-secret",
     metadata=k8s.meta.v1.ObjectMetaArgs(
         name="skypilot-postgres-secret",
         namespace="app",
     ),
-    string_data=skypilot_user_password.apply(
-        lambda pwd: {
-            "connection_string": f"postgresql://{SKYPILOT_USER}:{pwd}@postgres-rw.infra.svc.cluster.local:5432/{SKYPILOT_DB}",
-        },
-    ),
-    opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_app]),
+    string_data={
+        "connection_string": pulumi.Output.format(
+            "postgresql://{}:{}@postgres-rw.infra.svc.cluster.local:5432/{}",
+            SKYPILOT_USER,
+            skypilot_user_password,
+            SKYPILOT_DB,
+        ),
+    },
+    opts=pulumi.ResourceOptions(parent=ns_app, provider=hub_k8s_provider),
 )
 
 skypilot_runpod_secret = k8s.core.v1.Secret(
     "skypilot-runpod-secret",
     metadata=k8s.meta.v1.ObjectMetaArgs(name="skypilot-runpod-secret", namespace="app"),
     string_data={"api_key": runpod_api_key},
-    opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_app]),
+    opts=pulumi.ResourceOptions(parent=ns_app, provider=hub_k8s_provider),
 )
 
 # Tailscale OAuth client for the admin policy. The policy calls the
@@ -330,10 +343,10 @@ skypilot_tailscale_secret = k8s.core.v1.Secret(
         namespace="app",
     ),
     string_data={
-        "oauth_client_id": skypilot_tailescale_oauth_client.id,
-        "oauth_client_secret": skypilot_tailescale_oauth_client.key,
+        "oauth_client_id": skypilot_ts_oauth_client.id,
+        "oauth_client_secret": skypilot_ts_oauth_client.key,
     },
-    opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_app]),
+    opts=pulumi.ResourceOptions(parent=ns_app, provider=hub_k8s_provider),
 )
 
 # Admin policy as ConfigMap so the policy is a real file in the cluster and
@@ -349,7 +362,7 @@ skypilot_policy_configmap = k8s.core.v1.ConfigMap(
         "skypilot_policies.py": Path("scripts/skypilot_policies.py").read_text(),
         "tailscale_setup.sh": Path("scripts/tailscale_setup.sh").read_text(),
     },
-    opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[ns_app]),
+    opts=pulumi.ResourceOptions(parent=ns_app, provider=hub_k8s_provider),
 )
 
 skypilot = k8s.helm.v3.Release(
@@ -363,7 +376,7 @@ skypilot = k8s.helm.v3.Release(
     values={
         "apiService": {
             "skipResourceCheck": True,
-            "dbConnectionSecretName": skypilot_postgres_secret.metadata["name"],
+            "dbConnectionSecretName": skypilot_role_secret.metadata["name"],
             "podAnnotations": {
                 "checksum/skypilot-policies": hashlib.sha256(
                     (
@@ -432,7 +445,8 @@ skypilot = k8s.helm.v3.Release(
         },
     },
     opts=pulumi.ResourceOptions(
-        provider=k8s_provider,
+        parent=ns_app,
+        provider=hub_k8s_provider,
         depends_on=[
             postgres,
             tailscale_operator,
