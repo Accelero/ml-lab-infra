@@ -42,7 +42,8 @@ class S3Config:
 def _api_client(kubeconfig: str) -> kubernetes.client.ApiClient:
     cfg = kubernetes.client.Configuration()
     kubernetes.config.load_kube_config_from_dict(
-        yaml.safe_load(kubeconfig), client_configuration=cfg,
+        yaml.safe_load(kubeconfig),
+        client_configuration=cfg,
     )
     return kubernetes.client.ApiClient(configuration=cfg)
 
@@ -100,10 +101,16 @@ def _cluster_manifest(props: dict, *, restore: bool) -> dict:
     if restore:
         bootstrap = {"recovery": {"source": "backup-source"}}
         extra = {
-            "externalClusters": [{
-                "name": "backup-source",
-                "barmanObjectStore": {**store, "serverName": _CLUSTER_NAME},
-            }],
+            "externalClusters": [
+                {
+                    "name": "backup-source",
+                    "barmanObjectStore": {
+                        **store,
+                        "serverName": _CLUSTER_NAME,
+                        "wal": {"maxParallel": 8},
+                    },
+                }
+            ],
         }
     else:
         primary, *rest = databases
@@ -111,10 +118,12 @@ def _cluster_manifest(props: dict, *, restore: bool) -> dict:
         post_init_sql = []
         for db in rest:
             role = db.removesuffix("_db")
-            post_init_sql.extend([
-                f"CREATE ROLE {role} WITH LOGIN;",
-                f"CREATE DATABASE {db} OWNER {role};",
-            ])
+            post_init_sql.extend(
+                [
+                    f"CREATE ROLE {role} WITH LOGIN;",
+                    f"CREATE DATABASE {db} OWNER {role};",
+                ]
+            )
         bootstrap = {
             "initdb": {
                 "database": primary,
@@ -124,9 +133,7 @@ def _cluster_manifest(props: dict, *, restore: bool) -> dict:
         }
         extra = {}
 
-    annotations = (
-        {"cnpg.io/skipEmptyWalArchiveCheck": "enabled"} if restore else {}
-    )
+    annotations = {"cnpg.io/skipEmptyWalArchiveCheck": "enabled"} if restore else {}
     return {
         "apiVersion": f"{_GROUP}/{_VERSION}",
         "kind": "Cluster",
@@ -154,7 +161,11 @@ def _delete_if_exists(
     """Delete a namespaced custom object, ignoring 404."""
     try:
         custom_api.delete_namespaced_custom_object(
-            _GROUP, _VERSION, _NAMESPACE, plural, name,
+            _GROUP,
+            _VERSION,
+            _NAMESPACE,
+            plural,
+            name,
         )
     except kubernetes.client.exceptions.ApiException as exc:
         if exc.status != _HTTP_NOT_FOUND:
@@ -166,7 +177,10 @@ def _wait_backups_complete(custom_api: kubernetes.client.CustomObjectsApi) -> No
     deadline = time.monotonic() + _TIMEOUT
     while time.monotonic() < deadline:
         items = custom_api.list_namespaced_custom_object(
-            _GROUP, _VERSION, _NAMESPACE, "backups",
+            _GROUP,
+            _VERSION,
+            _NAMESPACE,
+            "backups",
         ).get("items", [])
         in_progress = [
             b["metadata"]["name"]
@@ -181,13 +195,16 @@ def _wait_backups_complete(custom_api: kubernetes.client.CustomObjectsApi) -> No
     log.warn(f"Backups still in progress after {_TIMEOUT}s, proceeding anyway.")
 
 
-
 def _wait_cluster_ready(custom_api: kubernetes.client.CustomObjectsApi) -> None:
     deadline = time.monotonic() + _TIMEOUT
     while time.monotonic() < deadline:
         time.sleep(_POLL_INTERVAL)
         obj = custom_api.get_namespaced_custom_object(
-            _GROUP, _VERSION, _NAMESPACE, "clusters", _CLUSTER_NAME,
+            _GROUP,
+            _VERSION,
+            _NAMESPACE,
+            "clusters",
+            _CLUSTER_NAME,
         )
         if obj.get("status", {}).get("readyInstances", 0) > 0:
             log.info(f"Postgres cluster '{_CLUSTER_NAME}' is ready.")
@@ -230,7 +247,11 @@ class _Provider(ResourceProvider):
         while True:
             try:
                 custom_api.create_namespaced_custom_object(
-                    _GROUP, _VERSION, _NAMESPACE, "clusters", manifest,
+                    _GROUP,
+                    _VERSION,
+                    _NAMESPACE,
+                    "clusters",
+                    manifest,
                 )
                 break
             except kubernetes.client.exceptions.ApiException as e:
@@ -269,7 +290,11 @@ class _Provider(ResourceProvider):
             " CNPG will flush and archive final WAL on shutdown...",
         )
         custom_api.delete_namespaced_custom_object(
-            _GROUP, _VERSION, _NAMESPACE, "clusters", _CLUSTER_NAME,
+            _GROUP,
+            _VERSION,
+            _NAMESPACE,
+            "clusters",
+            _CLUSTER_NAME,
         )
 
         # Wait for pod to exit before returning. Prevents Pulumi from deleting the

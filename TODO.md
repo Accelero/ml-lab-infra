@@ -4,6 +4,7 @@
 
 - [x] Trigger Postgres backup on `pulumi down`
 - [x] Restore latest Postgres backup on `pulumi up`
+- [x] Write integration test for Postgres S3 backup
 
 ## Automation
 
@@ -17,4 +18,3 @@
 - [ ] Make SkyPilot admin policy modular
 - [ ] Restructure and format SkyPilot-MLflow-integration test
 - [x] Normalize variable naming conventions across the codebase
-- [ ] Write integration test for Postgres S3 backup

@@ -16,7 +16,12 @@ from infrastructure.tailscale import (
     operator_oauth_client,
     skypilot_ts_oauth_client,
 )
-from resources import PostgresCluster, S3Config, TailscaleDeviceCleanup
+from resources import (
+    PostgresCluster,
+    S3Config,
+    SkyPilotAdminPolicy,
+    TailscaleDeviceCleanup,
+)
 
 _backup_config = pulumi.Config("backup")
 _mlflow_config = pulumi.Config("mlflow")
@@ -457,5 +462,15 @@ skypilot = k8s.helm.v3.Release(
             skypilot_tailscale_secret,
         ],
         delete_before_replace=True,
+    ),
+)
+
+skypilot_admin_policy = SkyPilotAdminPolicy(
+    "skypilot-admin-policy",
+    kubeconfig=hub_kubeconfig,
+    admin_policy="skypilot_policies.TailscalePolicy",
+    opts=pulumi.ResourceOptions(
+        parent=skypilot,
+        depends_on=[skypilot],
     ),
 )
