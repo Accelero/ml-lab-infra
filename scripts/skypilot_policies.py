@@ -8,7 +8,7 @@ Benefits over a static reusable key:
 - Each job gets a unique key; if it leaks, it is already consumed.
 - OAuth clients do not expire, no rotation needed.
 - Key generation is auditable per-job in the Tailscale admin panel.
-"""
+"""  # noqa: INP001
 
 import json
 import os
@@ -82,7 +82,7 @@ def _create_auth_key(bearer_token: str, tailnet: str) -> str:
     return data["key"]
 
 
-class TailscalePolicy(sky.AdminPolicy):
+class SkyPilotAdminPolicy(sky.AdminPolicy):
     """Injects Tailscale into every SkyPilot job via a fresh per-job auth key."""
 
     @classmethod

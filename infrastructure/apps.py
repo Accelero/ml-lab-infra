@@ -468,7 +468,7 @@ skypilot = k8s.helm.v3.Release(
 skypilot_admin_policy = SkyPilotAdminPolicy(
     "skypilot-admin-policy",
     kubeconfig=hub_kubeconfig,
-    admin_policy="skypilot_policies.TailscalePolicy",
+    admin_policy="skypilot_policies.SkyPilotAdminPolicy",
     opts=pulumi.ResourceOptions(
         parent=skypilot,
         depends_on=[skypilot],

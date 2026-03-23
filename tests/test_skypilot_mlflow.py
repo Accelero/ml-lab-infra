@@ -155,8 +155,12 @@ def test_mlflow_run_has_params_and_metrics(mlflow_run: Run) -> None:
 def test_mlflow_artifact_stored_in_s3(
     config: dict[str, str],
     mlflow_run: Run,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """model/model_weights.txt must be listed under the run's artifact store (S3)."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", config["s3_access_key"])
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", config["s3_secret_key"])
+    monkeypatch.setenv("MLFLOW_S3_ENDPOINT_URL", config["s3_endpoint"])
     client = MlflowClient(tracking_uri=config["mlflow_tracking_uri"])
     artifacts = client.list_artifacts(mlflow_run.info.run_id, path="model")
     artifact_paths = [a.path for a in artifacts]

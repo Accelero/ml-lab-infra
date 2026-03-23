@@ -24,6 +24,7 @@ import kubernetes.config
 import pytest
 import yaml
 from kubernetes.stream import stream
+from psycopg2.extensions import adapt as _pg_adapt
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -79,11 +80,17 @@ def _read_config(core_api: kubernetes.client.CoreV1Api) -> dict:
     return yaml.safe_load(result) or {}
 
 
+def _quote(value: str) -> str:
+    q = _pg_adapt(value)
+    q.encoding = "utf-8"
+    return q.getquoted().decode()
+
+
 def _write_config(core_api: kubernetes.client.CoreV1Api, config: dict) -> None:
     yaml_str = yaml.dump(config, default_flow_style=False)
-    escaped = yaml_str.replace("'", "''")
+    key_q, val_q = _quote(_CONFIG_KEY), _quote(yaml_str)
     sql = (
-        f"INSERT INTO config_yaml (key, value) VALUES ('{_CONFIG_KEY}', '{escaped}') "  # noqa: S608
+        f"INSERT INTO config_yaml (key, value) VALUES ({key_q}, {val_q}) "  # noqa: S608
         f"ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;"
     )
     _psql_exec(core_api, sql)
