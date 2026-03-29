@@ -109,7 +109,7 @@ def _cluster_manifest(props: dict, *, restore: bool) -> dict:
                         "serverName": _CLUSTER_NAME,
                         "wal": {"maxParallel": 8},
                     },
-                }
+                },
             ],
         }
     else:
@@ -122,7 +122,7 @@ def _cluster_manifest(props: dict, *, restore: bool) -> dict:
                 [
                     f"CREATE ROLE {role} WITH LOGIN;",
                     f"CREATE DATABASE {db} OWNER {role};",
-                ]
+                ],
             )
         bootstrap = {
             "initdb": {
@@ -238,12 +238,13 @@ class _Provider(ResourceProvider):
     def create(self, props: dict) -> CreateResult:
         client = _api_client(props["kubeconfig"])
         custom_api = kubernetes.client.CustomObjectsApi(client)
+        core_api = kubernetes.client.CoreV1Api(client)
 
         restore = _has_backup(props)
         log.info(f"Bootstrapping cluster via {'recovery' if restore else 'initdb'}...")
 
         manifest = _cluster_manifest(props, restore=restore)
-        deadline = time.monotonic() + 120
+        crd_deadline = time.monotonic() + 120
         while True:
             try:
                 custom_api.create_namespaced_custom_object(
@@ -256,12 +257,26 @@ class _Provider(ResourceProvider):
                 break
             except kubernetes.client.exceptions.ApiException as e:
                 if e.status == _HTTP_CONFLICT:
-                    log.info(
-                        "Cluster already exists (prior partial create),"
-                        " waiting for readiness...",
+                    log.info("Cluster already exists; checking health...")
+                    obj = custom_api.get_namespaced_custom_object(
+                        _GROUP, _VERSION, _NAMESPACE, "clusters", _CLUSTER_NAME,
                     )
-                    break
-                if e.status == _HTTP_NOT_FOUND and time.monotonic() < deadline:
+                    if obj.get("status", {}).get("readyInstances", 0) > 0:
+                        log.info(
+                            "Existing cluster is healthy, waiting for readiness...",
+                        )
+                        break
+                    log.info(
+                        "Orphaned cluster is unhealthy; deleting and recreating...",
+                    )
+                    custom_api.delete_namespaced_custom_object(
+                        _GROUP, _VERSION, _NAMESPACE, "clusters", _CLUSTER_NAME,
+                    )
+                    _wait_pod_terminated(core_api)
+                    # Reset CRD deadline for the next create attempt.
+                    crd_deadline = time.monotonic() + 120
+                    continue
+                if e.status == _HTTP_NOT_FOUND and time.monotonic() < crd_deadline:
                     log.info("CNPG CRDs not registered yet, retrying in 10s...")
                     time.sleep(10)
                 else:
@@ -289,13 +304,19 @@ class _Provider(ResourceProvider):
             f"Deleting cluster '{_CLUSTER_NAME}'."
             " CNPG will flush and archive final WAL on shutdown...",
         )
-        custom_api.delete_namespaced_custom_object(
-            _GROUP,
-            _VERSION,
-            _NAMESPACE,
-            "clusters",
-            _CLUSTER_NAME,
-        )
+        try:
+            custom_api.delete_namespaced_custom_object(
+                _GROUP,
+                _VERSION,
+                _NAMESPACE,
+                "clusters",
+                _CLUSTER_NAME,
+            )
+        except kubernetes.client.exceptions.ApiException as exc:
+            if exc.status == _HTTP_NOT_FOUND:
+                log.info("Cluster already gone, skipping delete.")
+                return
+            raise
 
         # Wait for pod to exit before returning. Prevents Pulumi from deleting the
         # S3 credentials secret while barman is still uploading the final WAL segment.

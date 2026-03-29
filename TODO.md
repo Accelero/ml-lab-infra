@@ -12,7 +12,7 @@
 - [x] Integrate SkyPilot MLflow pipeline
 - [x] Set SkyPilot config variable `admin policy` via Pulumi
 - [x] Make SkyPilot pick up a changed admin policy on `pulumi up`
-- [ ] Handle failed CNPG cluster creation gracefully, by avoiding orphaned CRs
+- [x] Handle failed CNPG cluster creation gracefully, by avoiding orphaned CRs
 
 ## Cleanup
 
