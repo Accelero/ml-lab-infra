@@ -27,5 +27,6 @@ dev = [
 minversion = "9.0"
 addopts = ["-s"]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 log_cli = true
 log_cli_level = "INFO"

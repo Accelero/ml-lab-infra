@@ -1,3 +1,4 @@
+# ruff: noqa: INP001  # tests/ is not a package
 """Dummy training script for the SkyPilot integration test.
 
 Logs hyperparams, a loss/accuracy curve, and a model-weights artifact to the
