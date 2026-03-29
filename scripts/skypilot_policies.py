@@ -1,13 +1,13 @@
-"""SkyPilot admin policy: auto-inject Tailscale into every job.
+"""SkyPilot admin policy: composite policy that chains sub-policies in order.
 
-On each job submission the policy prepends a setup script that installs Tailscale
-and joins the tailnet using a one-time ephemeral auth key scoped to tag:skypilot-node.
-That key is injected into the task environment so the setup script can join the tailnet.
+Each sub-policy is a ``sky.AdminPolicy`` subclass implementing
+``validate_and_mutate``. ``SkyPilotAdminPolicy`` is the sole entry point
+registered with SkyPilot; it threads the request through each sub-policy in
+order, passing each policy's ``MutatedUserRequest`` as input to the next.
 
-Benefits over a static reusable key:
-- Each job gets a unique key; if it leaks, it is already consumed.
-- OAuth clients do not expire, no rotation needed.
-- Key generation is auditable per-job in the Tailscale admin panel.
+To add a new sub-policy: subclass ``sky.AdminPolicy``, implement
+``validate_and_mutate``, and append the class to
+``SkyPilotAdminPolicy._policies``.
 """  # noqa: INP001
 
 import json
@@ -82,8 +82,8 @@ def _create_auth_key(bearer_token: str, tailnet: str) -> str:
     return data["key"]
 
 
-class SkyPilotAdminPolicy(sky.AdminPolicy):
-    """Injects Tailscale into every SkyPilot job via a fresh per-job auth key."""
+class _TailscalePolicy(sky.AdminPolicy):
+    """Prepend Tailscale setup and inject a per-job ephemeral auth key."""
 
     @classmethod
     def validate_and_mutate(
@@ -103,17 +103,28 @@ class SkyPilotAdminPolicy(sky.AdminPolicy):
         auth_key = _create_auth_key(bearer, _TAILNET)
 
         task = user_request.task
-        skypilot_config = user_request.skypilot_config
-        task.update_envs(
-            {
-                "TAILSCALE_AUTH_KEY": auth_key,
-            },
-        )
-
+        task.update_envs({"TAILSCALE_AUTH_KEY": auth_key})
         existing_setup = task.setup or ""
         task.setup = _TAILSCALE_SETUP + existing_setup
 
         return sky.MutatedUserRequest(
             task=task,
-            skypilot_config=skypilot_config,
+            skypilot_config=user_request.skypilot_config,
         )
+
+
+class SkyPilotAdminPolicy(sky.AdminPolicy):
+    """Composite admin policy: chains each registered sub-policy in order."""
+
+    _policies: tuple = (_TailscalePolicy,)
+
+    @classmethod
+    def validate_and_mutate(
+        cls,
+        user_request: sky.UserRequest,
+    ) -> sky.MutatedUserRequest:
+        """Thread the request through each sub-policy in sequence."""
+        result = user_request
+        for policy in cls._policies:
+            result = policy.validate_and_mutate(result)
+        return result

@@ -16,6 +16,6 @@
 
 ## Cleanup
 
-- [ ] Make SkyPilot admin policy modular
+- [x] Make SkyPilot admin policy modular
 - [ ] Restructure and format SkyPilot-MLflow-integration test
 - [x] Normalize variable naming conventions across the codebase
