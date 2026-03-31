@@ -5,7 +5,7 @@
 - [x] Trigger Postgres backup on `pulumi down`
 - [x] Restore latest Postgres backup on `pulumi up`
 - [x] Write integration test for Postgres S3 backup
-- [ ] Audit codebase and infrastructure for security vulnerabilities and hardening opportunities
+- [x] Audit codebase and infrastructure for security vulnerabilities and hardening opportunities
 
 ## Automation
 

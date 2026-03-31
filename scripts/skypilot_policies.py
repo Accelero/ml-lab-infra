@@ -61,7 +61,7 @@ def _create_auth_key(bearer_token: str, tailnet: str) -> str:
                     },
                 },
             },
-            "expirySeconds": 1000,
+            "expirySeconds": 300,
         },
     ).encode()
     conn = HTTPSConnection("api.tailscale.com", timeout=10)

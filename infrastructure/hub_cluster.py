@@ -29,7 +29,8 @@ _conn = command.remote.ConnectionArgs(
     host=hub_server.name.apply(lambda name: f"{name}.{_tailnet}"),
     user="root",
     private_key=hub_ssh_private_key,
-    dial_error_limit=20,  # retry for ~5 min while Tailscale registers the node
+    dial_error_limit=40,
+    per_dial_timeout=5,
 )
 
 # Install k3s bound to the Tailscale interface.
@@ -59,6 +60,7 @@ hub_kubeconfig_cmd = command.remote.Command(
         "TS_IP=$(tailscale ip -4) && "
         'sed "s/127.0.0.1/$TS_IP/g" /etc/rancher/k3s/k3s.yaml'
     ),
+    logging=command.remote.Logging.NONE,  # Don't log the kubeconfig in terminal output
     triggers=[hub_cluster_install.id],
     opts=pulumi.ResourceOptions(
         parent=hub_cluster_install,

@@ -69,13 +69,151 @@ ns_tailscale = k8s.core.v1.Namespace(
 )
 ns_infra = k8s.core.v1.Namespace(
     "ns-infra",
-    metadata=k8s.meta.v1.ObjectMetaArgs(name="infra"),
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="infra",
+        labels={
+            "pod-security.kubernetes.io/enforce": "baseline",
+            "pod-security.kubernetes.io/warn": "restricted",
+        },
+    ),
     opts=pulumi.ResourceOptions(parent=hub_kubeconfig_cmd, provider=hub_k8s_provider),
 )
 ns_app = k8s.core.v1.Namespace(
     "ns-app",
-    metadata=k8s.meta.v1.ObjectMetaArgs(name="app"),
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="app",
+        labels={
+            "pod-security.kubernetes.io/enforce": "baseline",
+            "pod-security.kubernetes.io/warn": "restricted",
+        },
+    ),
     opts=pulumi.ResourceOptions(parent=hub_kubeconfig_cmd, provider=hub_k8s_provider),
+)
+
+# ── Network Policies ─────────────────────────────────────────────────────────────────
+
+# Default deny all ingress in infra namespace. Explicit allow rules below open
+# only the ports that are actually needed.
+_netpol_opts_infra = pulumi.ResourceOptions(parent=ns_infra, provider=hub_k8s_provider)
+
+k8s.networking.v1.NetworkPolicy(
+    "netpol-infra-default-deny",
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="default-deny-ingress",
+        namespace="infra",
+    ),
+    spec=k8s.networking.v1.NetworkPolicySpecArgs(
+        pod_selector=k8s.meta.v1.LabelSelectorArgs(match_labels={}),
+        policy_types=["Ingress"],
+    ),
+    opts=_netpol_opts_infra,
+)
+
+# Allow app namespace pods (MLflow, SkyPilot) to reach Postgres on port 5432.
+k8s.networking.v1.NetworkPolicy(
+    "netpol-infra-allow-postgres-from-app",
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="allow-postgres-from-app",
+        namespace="infra",
+    ),
+    spec=k8s.networking.v1.NetworkPolicySpecArgs(
+        pod_selector=k8s.meta.v1.LabelSelectorArgs(
+            match_labels={"cnpg.io/cluster": "postgres"},
+        ),
+        policy_types=["Ingress"],
+        ingress=[
+            k8s.networking.v1.NetworkPolicyIngressRuleArgs(
+                from_=[
+                    k8s.networking.v1.NetworkPolicyPeerArgs(
+                        namespace_selector=k8s.meta.v1.LabelSelectorArgs(
+                            match_labels={
+                                "kubernetes.io/metadata.name": "app",
+                            },
+                        ),
+                    ),
+                ],
+                ports=[
+                    k8s.networking.v1.NetworkPolicyPortArgs(
+                        protocol="TCP",
+                        port=5432,
+                    ),
+                ],
+            ),
+        ],
+    ),
+    opts=_netpol_opts_infra,
+)
+
+# Allow the CNPG operator (cnpg-system namespace) to manage Postgres pods.
+k8s.networking.v1.NetworkPolicy(
+    "netpol-infra-allow-postgres-from-cnpg",
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="allow-postgres-from-cnpg",
+        namespace="infra",
+    ),
+    spec=k8s.networking.v1.NetworkPolicySpecArgs(
+        pod_selector=k8s.meta.v1.LabelSelectorArgs(
+            match_labels={"cnpg.io/cluster": "postgres"},
+        ),
+        policy_types=["Ingress"],
+        ingress=[
+            k8s.networking.v1.NetworkPolicyIngressRuleArgs(
+                from_=[
+                    k8s.networking.v1.NetworkPolicyPeerArgs(
+                        namespace_selector=k8s.meta.v1.LabelSelectorArgs(
+                            match_labels={
+                                "kubernetes.io/metadata.name": "cnpg-system",
+                            },
+                        ),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    opts=_netpol_opts_infra,
+)
+
+# Default deny all ingress in app namespace.
+_netpol_opts_app = pulumi.ResourceOptions(parent=ns_app, provider=hub_k8s_provider)
+
+k8s.networking.v1.NetworkPolicy(
+    "netpol-app-default-deny",
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="default-deny-ingress",
+        namespace="app",
+    ),
+    spec=k8s.networking.v1.NetworkPolicySpecArgs(
+        pod_selector=k8s.meta.v1.LabelSelectorArgs(match_labels={}),
+        policy_types=["Ingress"],
+    ),
+    opts=_netpol_opts_app,
+)
+
+# Allow Tailscale ingress proxies (tailscale namespace) to reach app pods.
+k8s.networking.v1.NetworkPolicy(
+    "netpol-app-allow-from-tailscale",
+    metadata=k8s.meta.v1.ObjectMetaArgs(
+        name="allow-from-tailscale",
+        namespace="app",
+    ),
+    spec=k8s.networking.v1.NetworkPolicySpecArgs(
+        pod_selector=k8s.meta.v1.LabelSelectorArgs(match_labels={}),
+        policy_types=["Ingress"],
+        ingress=[
+            k8s.networking.v1.NetworkPolicyIngressRuleArgs(
+                from_=[
+                    k8s.networking.v1.NetworkPolicyPeerArgs(
+                        namespace_selector=k8s.meta.v1.LabelSelectorArgs(
+                            match_labels={
+                                "kubernetes.io/metadata.name": "tailscale",
+                            },
+                        ),
+                    ),
+                ],
+            ),
+        ],
+    ),
+    opts=_netpol_opts_app,
 )
 
 # ── Tailscale operator ────────────────────────────────────────────────────────────────
@@ -197,6 +335,7 @@ postgres = PostgresCluster(
         bucket=backup_s3_bucket,
         access_key=backup_s3_access_key,
         secret_key=backup_s3_secret_key,
+        retention_policy=_backup_config.get("retentionPolicy") or "1w",
     ),
     databases=[MLFLOW_DB, SKYPILOT_DB],
     opts=pulumi.ResourceOptions(
@@ -291,6 +430,17 @@ mlflow = k8s.helm.v3.Release(
         "log": {
             "enabled": False,
         },  # must be disabled to use uvicorn and allow usage of extraArgs allowedHosts
+        "podSecurityContext": {
+            "fsGroup": 1001,
+            "fsGroupChangePolicy": "OnRootMismatch",
+        },
+        "securityContext": {
+            "allowPrivilegeEscalation": False,
+            "capabilities": {"drop": ["ALL"]},
+            "runAsNonRoot": True,
+            "runAsUser": 1001,
+            "runAsGroup": 1001,
+        },
         "extraArgs": {"allowedHosts": f"*.{_tailnet}"},
         "ingress": {
             "enabled": True,
@@ -382,6 +532,16 @@ skypilot = k8s.helm.v3.Release(
         "apiService": {
             "skipResourceCheck": True,
             "dbConnectionSecretName": skypilot_role_secret.metadata["name"],
+            "podSecurityContext": {
+                "runAsUser": 1000,
+                "runAsGroup": 1000,
+                "fsGroup": 1000,
+            },
+            "securityContext": {
+                "allowPrivilegeEscalation": False,
+                "capabilities": {"drop": ["ALL"]},
+                "runAsNonRoot": True,
+            },
             "podAnnotations": {
                 "checksum/skypilot-policies": hashlib.sha256(
                     (

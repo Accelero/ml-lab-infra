@@ -1,2 +1,8 @@
 *.pyc
 venv/
+.env
+.env.*
+*.pem
+*.key
+kubeconfig*
+credentials.*

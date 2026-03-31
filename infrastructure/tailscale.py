@@ -39,10 +39,10 @@ acl = tailscale.Acl(
                 "tag:skypilot-node": ["tag:skypilot-server"],
             },
             "grants": [
-                # k8s-operator can reach anything (needs to provision/expose services)
+                # k8s-operator can reach k8s nodes and the internet (HTTPS certs)
                 {
                     "src": ["tag:k8s-operator"],
-                    "dst": ["*"],
+                    "dst": ["tag:k8s", "autogroup:internet"],
                     "ip": ["*"],
                 },
                 # k8s nodes can talk to each other (pod/service mesh traffic)

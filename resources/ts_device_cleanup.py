@@ -39,7 +39,7 @@ class _TailscaleDeviceCleanupProvider(ResourceProvider):
                 urllib.request.Request(
                     f"https://api.tailscale.com/api/v2/tailnet/{tailnet}/devices",
                     headers={"Authorization": f"Bearer {token}"},
-                )
+                ),
             ) as r:
                 devices = json.load(r).get("devices", [])
 
@@ -51,13 +51,13 @@ class _TailscaleDeviceCleanupProvider(ResourceProvider):
                             f"https://api.tailscale.com/api/v2/device/{d['id']}",
                             method="DELETE",
                             headers={"Authorization": f"Bearer {token}"},
-                        )
+                        ),
                     )
                     log.info(f"Tailscale node '{hostname}' removed.")
                     break
             else:
                 log.info(f"Tailscale node '{hostname}' not found in tailnet, skipping.")
-        except Exception as e:
+        except (OSError, ValueError, KeyError) as e:
             log.warn(f"Tailscale cleanup warning: {e}")
 
 

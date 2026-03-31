@@ -37,6 +37,7 @@ class S3Config:
     bucket: str
     access_key: Input[str]
     secret_key: Input[str]
+    retention_policy: str
 
 
 def _api_client(kubeconfig: str) -> kubernetes.client.ApiClient:
@@ -85,6 +86,7 @@ def _s3_store(props: dict) -> dict:
 def _cluster_manifest(props: dict, *, restore: bool) -> dict:
     store = _s3_store(props)
     backup_store = {**store, "wal": {"compression": "gzip"}}
+    retention_policy = props.get("retention_policy") or "1w"
     databases: list[str] = props["databases"]
     roles = [db.removesuffix("_db") for db in databases]
 
@@ -146,7 +148,10 @@ def _cluster_manifest(props: dict, *, restore: bool) -> dict:
             "instances": 1,
             "bootstrap": bootstrap,
             "storage": {"size": "10Gi"},
-            "backup": {"barmanObjectStore": backup_store, "retentionPolicy": "1w"},
+            "backup": {
+                "barmanObjectStore": backup_store,
+                "retentionPolicy": retention_policy,
+            },
             "managed": {"roles": managed_roles},
             **extra,
         },
@@ -345,6 +350,7 @@ class PostgresCluster(Resource):
                 "s3_access_key": s3.access_key,
                 "s3_secret_key": s3.secret_key,
                 "databases": databases,
+                "retention_policy": s3.retention_policy,
             },
             opts,
         )
