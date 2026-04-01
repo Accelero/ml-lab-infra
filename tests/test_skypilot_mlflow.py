@@ -35,8 +35,8 @@ def test_skypilot_mlflow_integration(
 ) -> None:
     """Managed job runs, logs metrics/params, and uploads artifact to S3."""
     tailnet = pulumi_config("tailscale:tailnet")
-    mlflow_tracking_uri = f"https://mlflow-test.{tailnet}"
-    skypilot_endpoint = f"https://skypilot-test.{tailnet}"
+    mlflow_tracking_uri = f"https://mlflow.{tailnet}"
+    skypilot_endpoint = f"https://skypilot.{tailnet}"
     s3_endpoint = mlflow_s3_config["endpoint"]
     s3_access_key = mlflow_s3_config["access_key"]
     s3_secret_key = mlflow_s3_config["secret_key"]

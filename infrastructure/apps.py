@@ -447,11 +447,11 @@ mlflow = k8s.helm.v3.Release(
             "className": "tailscale",
             "hosts": [
                 {
-                    "host": "mlflow-test",
+                    "host": "mlflow",
                     "paths": [{"path": "/", "pathType": "ImplementationSpecific"}],
                 },
             ],
-            "tls": [{"hosts": ["mlflow-test"], "secretName": "mlflow-tls"}],
+            "tls": [{"hosts": ["mlflow"], "secretName": "mlflow-tls"}],
         },
     },
     opts=pulumi.ResourceOptions(
@@ -604,7 +604,7 @@ skypilot = k8s.helm.v3.Release(
         "ingress": {
             "enabled": True,
             "ingressClassName": "tailscale",
-            "host": "skypilot-test",
+            "host": "skypilot",
             "path": "/",
             "tls": {"enabled": True, "secretName": "skypilot-tls"},
         },
