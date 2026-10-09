@@ -4,3 +4,8 @@ runtime:
   name: python
   options:
     toolchain: uv
+config:
+  k3sVersion:
+    type: string
+    default: v1.37.1+k3s1
+    description: Exact K3s release or official channel resolved during Pulumi evaluation.

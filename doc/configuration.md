@@ -46,6 +46,12 @@ pulumi config set hub_server:location nbg1
 | `backup:s3SecretKey` | yes | (required) | S3 secret access key. |
 | `backup:retentionPolicy` | no | `1w` | Barman retention policy. Accepts duration strings like `1w`, `30d`, `2w`. |
 
+Retention changes apply in place through `pulumi up`. On an existing Postgres resource,
+bucket and endpoint changes require an explicit archive migration and are rejected by
+the provider. Key rotation updates the Kubernetes Secret and verifies archive read
+access. See [Postgres configuration updates](operations.md#updating-postgres-configuration)
+for verification limits, drift handling, and migration restrictions.
+
 ### `mlflow`
 
 | Key | Secret | Default | Description |
@@ -69,7 +75,23 @@ use a different provider instead.
 
 | Key | Secret | Default | Description |
 | --- | --- | --- | --- |
-| `k3sVersion` | no | `stable` | K3s version or channel. The `stable` channel is resolved to the latest stable release at deploy time. Pin to a specific version for reproducibility, e.g. `v1.32.0+k3s1`. |
+| `k3sVersion` | no | `v1.37.1+k3s1` | Project default pinned in `Pulumi.yaml`. Accepts an exact release or an official channel (`stable`, `latest`, `testing`, or a minor channel such as `v1.37`). Channels resolve during Pulumi evaluation and their resolved release participates in the installation trigger. Stack configuration overrides the project default. |
+
+Pinned versions require no channel lookup and remain unchanged until configuration is edited.
+Channel resolution has a ten-second request timeout and rejects unexpected HTTP responses or
+redirects. The installer always receives the resolved release through `INSTALL_K3S_VERSION`.
+The `k3s_version` stack output reports the selected release; it does not independently verify the
+version running on the node.
+
+To pin an existing stack that overrides the project default:
+
+```bash
+pulumi config set k3sVersion v1.37.1+k3s1
+```
+
+Use `pulumi preview` before upgrading. For an existing cluster, move through consecutive minor
+versions and check operator and chart compatibility. The project pin is the newest non-prerelease
+as of 2026-10-09; it is not a floating `latest` channel.
 
 ## Sample Pulumi.dev.yaml
 
@@ -85,8 +107,8 @@ config:
   hub_server:serverType: cx33   # optional; default shown
   hub_server:location: fsn1     # optional; default shown
 
-  # K3s version (optional; uncomment to pin)
-  # k3sVersion: v1.32.0+k3s1
+  # K3s version (optional; project default is pinned)
+  # ml-lab-infra:k3sVersion: v1.37.1+k3s1
 
   # Tailscale
   tailscale:tailnet: yourname.ts.net

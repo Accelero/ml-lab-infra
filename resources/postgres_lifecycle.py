@@ -4,15 +4,15 @@ import hashlib
 import json
 import time
 import uuid
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 import kubernetes.client
-from kubernetes.stream import stream
 from pulumi import log
 
 from resources.postgres_archive import ArchiveTarget, BaseBackup, PostgresArchive
+from resources.postgres_exec import PostgresExec
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -23,7 +23,6 @@ _CHECKPOINT = "postgres-teardown-checkpoint"
 _NOT_FOUND = 404
 _CONFLICT = 409
 _REQUEST_TIMEOUT = (5, 30)
-_EXEC_TIMEOUT = 60
 _POLL_INTERVAL = 10
 _TIMEOUT = 600
 
@@ -65,8 +64,9 @@ class PostgresLifecycle:
 
     def __init__(self, client: kubernetes.client.ApiClient, props: dict) -> None:
         """Keep credentials in memory and bind operations to this cluster."""
-        self.core = kubernetes.client.CoreV1Api(client)
-        self.custom = kubernetes.client.CustomObjectsApi(client)
+        self.executor = PostgresExec(client)
+        self.core = self.executor.core
+        self.custom = self.executor.custom
         self.databases = props["databases"]
         if (
             not self.databases
@@ -80,53 +80,11 @@ class PostgresLifecycle:
 
     def cluster(self) -> dict | None:
         """Read the live Cluster, distinguishing absence from API failures."""
-        try:
-            return self.custom.get_namespaced_custom_object(
-                "postgresql.cnpg.io",
-                "v1",
-                _NAMESPACE,
-                "clusters",
-                _CLUSTER,
-                _request_timeout=_REQUEST_TIMEOUT,
-            )
-        except kubernetes.client.exceptions.ApiException as exc:
-            if exc.status != _NOT_FOUND:
-                raise
-        return None
+        return self.executor.cluster()
 
     def query(self, sql: str, variables: dict[str, str] | None = None) -> str:
         """Execute psql input with checked exit status and a bounded wait."""
-        cluster = self.cluster()
-        primary = (cluster or {}).get("status", {}).get("currentPrimary")
-        if not primary:
-            msg = "Postgres has no known primary for archive verification."
-            raise RuntimeError(msg)
-        command = ["psql", "-X", "-U", "postgres", "-d", "postgres", "-t", "-A"]
-        for name, value in {"ON_ERROR_STOP": "1", **(variables or {})}.items():
-            command.extend(["--set", f"{name}={value}"])
-        response = stream(
-            self.core.connect_get_namespaced_pod_exec,
-            primary,
-            _NAMESPACE,
-            command=command,
-            stdin=True,
-            stdout=True,
-            stderr=True,
-            tty=False,
-            _preload_content=False,
-            _request_timeout=_REQUEST_TIMEOUT,
-        )
-        with closing(response) as process:
-            process.write_stdin(sql.strip() + "\n\\q\n")
-            process.run_forever(timeout=_EXEC_TIMEOUT)
-            if process.is_open():
-                msg = "Postgres archive command timed out."
-                raise TimeoutError(msg)
-            if process.returncode != 0:
-                error = process.read_stderr().strip()
-                msg = f"Postgres archive command failed: {error}"
-                raise RuntimeError(msg)
-            return process.read_stdout().strip()
+        return self.executor.query(sql, variables)
 
     def open_databases(self) -> None:
         """Reopen application databases after restoring a teardown cutoff."""

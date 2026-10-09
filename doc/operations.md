@@ -20,6 +20,47 @@ What happens during a first deploy (~5 minutes):
    initial base backup and verifies its WAL archive before applications deploy.
 5. MLflow and SkyPilot deployed; SkyPilot admin policy upserted into Postgres
 
+## Updating Postgres configuration
+
+`pulumi up` updates backup retention on the existing CNPG Cluster without recreating
+Postgres. The provider patches only `spec.backup.retentionPolicy`, checks the value
+read back from Kubernetes, and waits for a ready instance. A resource-version conflict,
+API failure, or failed verification stops the update; retry after resolving the cause.
+Retention controls cleanup after subsequent backups, so accepting the setting does not
+mean old objects have already been deleted.
+
+S3 key rotation updates the separately managed `postgres-backup-credentials` Secret.
+The provider uses the new keys to list and read a completed base backup before accepting
+them in its state. It does not create a backup or test S3 write/delete permissions. Keep
+those permissions on the replacement keys and check archiving after deployment. If the
+verification fails, the Secret may already have changed; Pulumi does not roll it back.
+Restore working keys or correct their permissions before retrying.
+
+Changing the archive bucket, S3 endpoint, or application database list on an existing
+resource is rejected during input validation. Archive relocation needs a migration that
+preserves the base backup and WAL chain. Database changes need explicit database and
+role management; restoring the existing physical backup does not perform those changes.
+Do not use forced replacement to bypass these restrictions.
+
+Kubeconfig authentication or address changes are accepted only when the target CNPG
+Cluster's Kubernetes UID matches the stored UID. Older state without a UID must establish
+that both connections reach the same Cluster. Refresh and updates refuse to adopt an
+unrelated Cluster with the same name.
+
+`pulumi refresh` reads retention and archive location into outputs and inputs, so the next
+preview can detect drift. Retention drift can be repaired by `pulumi up`. Archive location
+or credential-reference drift requires inspection and explicit repair before continuing.
+Refresh leaves database names and credential values unchanged; it does not inspect SQL
+database contents or read the separately managed Secret. Only a Kubernetes 404 marks the
+Cluster missing. Permission errors and connectivity failures stop refresh rather than
+claiming the database is gone. A subsequent creation still uses the normal backup/recovery
+checks.
+
+`delete_before_replace=True` remains enabled because replacements share the fixed
+Kubernetes name `infra/postgres`. It controls replacement order, not whether input changes
+cause replacement. Supported changes update in place; replacement deletes and verifies
+the recovery archive before creating the next Cluster.
+
 ## Teardown
 
 ```bash
@@ -89,6 +130,19 @@ pulumi up
 
 The SkyPilot pod has an annotation (`checksum/skypilot-policies`) computed from the policy file
 contents. Any change to the files causes a rolling pod restart, which picks up the updated policy.
+
+The database policy provider discovers CNPG's current primary for every SQL command,
+checks the command's exit status, and reads back the policy after setting or removing it.
+SQL failures, command timeouts, invalid persisted YAML, and verification failures stop
+the Pulumi operation. Removal is skipped only when a successful query confirms the table
+or policy is absent. On deployment, a missing table is polled for up to five minutes.
+Commands have a sixty-second execution limit after the exec connection is established;
+table checks use the remaining polling time when it is shorter. SQL values travel over
+stdin, and errors do not include potentially sensitive SQL output.
+
+The provider still reads and writes the whole configuration row. Avoid concurrent manual
+edits to that row during deployment; this change does not add a transaction spanning the
+configuration read and write.
 
 To add a new sub-policy:
 

@@ -1,28 +1,15 @@
 """Cluster installation and kubeconfig export for the hub server."""
 
-import http.client
-
 import pulumi
 import pulumi_command as command
 import pulumi_kubernetes as k8s
 
 from infrastructure.hub_server import hub_server, hub_ssh_private_key
+from resources.k3s_version import resolve_k3s_version
 
-
-def _resolve_k3s_version(version: str) -> str:
-    """Resolve a channel name like 'stable' to a pinned release version."""
-    if not version.startswith("v"):
-        conn = http.client.HTTPSConnection("update.k3s.io")
-        conn.request("GET", f"/v1-release/channels/{version}")
-        resp = conn.getresponse()
-        location = resp.getheader("Location", "")
-        return location.rstrip("/").rsplit("/", 1)[-1]
-    return version
-
-
-# Set `k3sVersion` in stack config to pin a version or use a channel name.
 _config = pulumi.Config()
-k3s_version = _resolve_k3s_version(_config.get("k3sVersion") or "stable")
+k3s_version = resolve_k3s_version(_config.require("k3sVersion"))
+pulumi.export("k3s_version", k3s_version)
 _tailnet = pulumi.Config("tailscale").require("tailnet")
 
 _conn = command.remote.ConnectionArgs(
@@ -39,7 +26,7 @@ hub_cluster_install = command.remote.Command(
     connection=_conn,
     create=(
         "TS_IP=$(tailscale ip -4) && "
-        f'curl -sfL https://get.k3s.io | INSTALL_K3S_CHANNEL="{k3s_version}" '
+        f'curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{k3s_version}" '
         'INSTALL_K3S_EXEC="server" sh -s - '
         "--flannel-iface=tailscale0 "
         "--node-ip=$TS_IP "

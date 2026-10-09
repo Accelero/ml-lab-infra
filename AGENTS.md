@@ -11,15 +11,32 @@ jobs to RunPod.
 - `__main__.py`: Pulumi entry point. Infrastructure modules register resources
   when imported; avoid importing them in isolated tests without Pulumi mocks.
 - `infrastructure/hub_server.py`: VM, SSH identity, firewall, Tailscale bootstrap.
+  `scripts/cloud-init.sh` joins the tailnet and configures swap.
 - `infrastructure/hub_cluster.py`: K3s installation, secret kubeconfig output,
-  Kubernetes provider.
+  Kubernetes provider. K3s binds to the Tailscale interface; the exported
+  `hub_kubeconfig` replaces localhost with the server's Tailscale IP.
+- `resources/k3s_version.py`: validated channel resolution. The default release
+  is pinned in `Pulumi.yaml`; stack config can override it. Keep the resolved
+  version in the installation trigger and use `INSTALL_K3S_VERSION`.
 - `infrastructure/tailscale.py`: tailnet ACL, settings, workload OAuth clients.
 - `infrastructure/apps.py`: namespaces, network policies, Helm releases,
   credentials, Postgres and application wiring.
-- `resources/`: dynamic providers for Postgres create/restore/teardown,
-  SkyPilot's database-persisted admin policy, and Tailscale device cleanup.
+- `resources/postgres_cluster.py`: `PostgresCluster`, the dynamic provider for
+  CNPG creation, recovery, updates, refresh, and verified teardown.
+  `resources/postgres_config.py` validates inputs and reads managed configuration.
+  `resources/postgres_exec.py` runs checked SQL on CNPG's current primary; share
+  this executor with providers that need database access.
+- `resources/skypilot_config.py`: `SkyPilotAdminPolicy`, which upserts the
+  `admin_policy` field in `config_yaml` under `api_server_config`. SkyPilot's
+  persisted config overrides Helm values, so update the database through this
+  provider. Writes and deletion verify the resulting policy field. Preserve
+  command failure handling, YAML mapping validation, and stdin parameter values.
+- `resources/ts_device_cleanup.py`: `TailscaleDeviceCleanup`, which obtains an
+  OAuth token and deregisters the matching device during teardown.
 - `scripts/`: cloud-init and SkyPilot policy/Tailscale setup. Policy files are
   mounted through a ConfigMap; their checksum triggers a SkyPilot rollout.
+  Extend `scripts/skypilot_policies.py` by adding a `sky.AdminPolicy` subclass
+  to `SkyPilotAdminPolicy._policies`; `pulumi up` reapplies the policy.
 - `tests/unit/`: isolated archive and lifecycle regression tests.
 - `tests/`: live integration tests and GPU job payloads, with shared fixtures in
   `tests/conftest.py`.
@@ -64,6 +81,12 @@ or use unsafe fixes merely to obtain a passing check.
 - Preserve Tailscale service access and least-privilege controls. The Hetzner
   firewall currently allows inbound UDP 41641; Kubernetes policies deny ingress
   by default in `app` and `infra`. They do not currently deny egress.
+- Tailnet grants currently allow the operator to reach `tag:k8s` and the
+  internet, `tag:k8s` peers to communicate, the hub to reach Kubernetes and the
+  operator, and SkyPilot's server to reach the hub and Kubernetes. Workers use
+  `tag:skypilot-node` and can reach `tag:k8s`; members can also reach `tag:k8s`,
+  while admins can reach everything. These grants allow all protocols/ports;
+  review `infrastructure/tailscale.py` before changing access.
 - Preserve Pulumi resource names, parents, providers, and dependency ordering.
   Renaming or reparenting resources can cause replacement; inspect the preview
   and provide aliases when retaining existing resource identity.
@@ -73,9 +96,17 @@ or use unsafe fixes merely to obtain a passing check.
   deletion. Preserve fail-closed waits, the retry checkpoint, and dependencies
   that keep S3 credentials available. Archive parsing and database operations
   live in `resources/postgres_archive.py` and `resources/postgres_lifecycle.py`.
+  WAL compression is gzip; scheduled base backups run daily at 03:00 UTC.
+  Retention updates patch the live Cluster. Reject implicit archive relocation or
+  database-list changes; do not substitute automatic replacement for a migration.
+  Preserve Cluster UID checks, secret outputs, and deletion-before-replacement
+  ordering for the fixed `infra/postgres` name. Refresh observes retention and
+  archive location; database contents and Secret values remain separately managed.
 - Use Pulumi secret config and keep secret values marked through outputs and
   dynamic resource properties. Never log or commit plaintext credentials,
   private keys, kubeconfigs, or decrypted stack state.
+  Stack secrets are encrypted in `Pulumi.<stack>.yaml`. Config namespaces are
+  `tailscale`, `hcloud`, `hub_server`, `backup`, `mlflow`, and `runpod`.
 - Keep kubeconfig in memory. For shell access, capture the secret stack output
   in a Bash variable and pass it to `kubectl` via process substitution in the
   same invocation. Do not write it to disk or print it to tool output.
@@ -85,6 +116,13 @@ or use unsafe fixes merely to obtain a passing check.
   resource replacement only within an explicitly authorized operational task.
   The ACL resource overwrites the tailnet policy, so its scope extends beyond
   this VM.
+
+For authorized cluster inspection, keep kubeconfig in one shell invocation:
+
+```bash
+KC=$(pulumi stack output hub_kubeconfig --show-secrets) && \
+kubectl --kubeconfig <(printf '%s' "$KC") get pods -A
+```
 
 ## Tests
 
@@ -107,3 +145,4 @@ checks backup/recovery, `test_skypilot_admin_policy.py` temporarily modifies the
 SkyPilot config row, and `test_skypilot_mlflow.py` launches a paid RunPod GPU job.
 Ensure cleanup completes and report skipped live checks. A documentation-only
 change does not require live infrastructure tests.
+Use a test file path or `-k '<test_name>'` to select relevant tests.

@@ -17,7 +17,10 @@ import kubernetes.config
 import pytest
 import yaml
 from kubernetes.stream import stream
-from psycopg2.extensions import adapt as _pg_adapt
+
+from resources.postgres_exec import PostgresExec
+from resources.skypilot_config import _read_config as read_skypilot_config
+from resources.skypilot_config import _write_config as write_skypilot_config
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -34,8 +37,6 @@ _BACKUP_CR_NAME = "backup-restore-test"
 _POLL_INTERVAL = 10
 _BACKUP_TIMEOUT = 600
 _RESTORE_TIMEOUT = 600
-_SKYPILOT_DB = "skypilot_db"
-_CONFIG_KEY = "api_server_config"
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
@@ -61,44 +62,15 @@ def _build_k8s_client() -> kubernetes.client.ApiClient:
     return kubernetes.client.ApiClient(configuration=cfg)
 
 
-def _psql_exec(core_api: kubernetes.client.CoreV1Api, sql: str) -> str:
-    return stream(
-        core_api.connect_get_namespaced_pod_exec,
-        _PRIMARY_POD,
-        _NAMESPACE,
-        command=["psql", "-U", "postgres", "-d", _SKYPILOT_DB, "-t", "-A", "-c", sql],
-        stderr=True,
-        stdin=False,
-        stdout=True,
-        tty=False,
-    )
-
-
-def _pg_quote(value: str) -> str:
-    q = _pg_adapt(value)
-    q.encoding = "utf-8"
-    return q.getquoted().decode()
-
-
 def _read_skypilot_config(core_api: kubernetes.client.CoreV1Api) -> dict:
-    sql = f"SELECT value FROM config_yaml WHERE key = '{_CONFIG_KEY}';"  # noqa: S608
-    result = _psql_exec(core_api, sql).strip()
-    if not result:
-        return {}
-    return yaml.safe_load(result) or {}
+    return read_skypilot_config(PostgresExec(core_api.api_client))
 
 
 def _write_skypilot_config(
     core_api: kubernetes.client.CoreV1Api,
     config: dict,
 ) -> None:
-    yaml_str = yaml.dump(config, default_flow_style=False)
-    key_q, val_q = _pg_quote(_CONFIG_KEY), _pg_quote(yaml_str)
-    sql = (
-        f"INSERT INTO config_yaml (key, value) VALUES ({key_q}, {val_q}) "  # noqa: S608
-        f"ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;"
-    )
-    _psql_exec(core_api, sql)
+    write_skypilot_config(PostgresExec(core_api.api_client), config)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────

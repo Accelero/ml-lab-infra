@@ -9,7 +9,10 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 from kubernetes.client.exceptions import ApiException
 
-from resources import postgres_cluster, postgres_lifecycle
+from resources import postgres_cluster, postgres_exec, postgres_lifecycle
+from resources.postgres_cluster import (
+    _cluster_manifest as cluster_manifest,
+)
 from resources.postgres_cluster import (
     _Provider as Provider,
 )
@@ -100,13 +103,13 @@ class DatabaseGateTests(unittest.TestCase):
             with (
                 self.subTest(is_open=is_open),
                 patch.object(
-                    instance,
+                    instance.executor,
                     "cluster",
                     return_value={
                         "status": {"currentPrimary": "postgres-3"},
                     },
                 ),
-                patch.object(postgres_lifecycle, "stream", return_value=process) as run,
+                patch.object(postgres_exec, "stream", return_value=process) as run,
                 pytest.raises(error),
             ):
                 instance.query("SELECT 1;")
@@ -222,6 +225,10 @@ class ProviderGateTests(unittest.TestCase):
         self.archive.backups.return_value = [base_backup()]
         self.archive.missing_wals.return_value = []
         self.api = MagicMock()
+        self.api.get_namespaced_custom_object.return_value = {
+            **cluster_manifest(_PROPS, restore=False),
+            "metadata": {"uid": "test-postgres", "resourceVersion": "1"},
+        }
         patches = {
             "_api_client": MagicMock(),
             "PostgresLifecycle": MagicMock(return_value=self.instance),
@@ -300,8 +307,34 @@ class ProviderGateTests(unittest.TestCase):
         self.archive.backups.return_value = []
         self.archive.objects.return_value = {}
         self.instance.cluster.return_value = None
-        Provider().create(_PROPS)
+        result = Provider().create(_PROPS)
         expect_equal(self.instance.initial_backup.call_args, call(self.archive))
+        expect_equal(result.outs["cluster_uid"], "test-postgres")
+
+    def test_existing_configuration_mismatch_blocks_startup(self) -> None:
+        """Do not reopen databases or run an initial backup against another archive."""
+        conflict = ApiException(status=409)
+        self.api.create_namespaced_custom_object.side_effect = conflict
+        for field, value in (
+            ("retentionPolicy", "30d"),
+            ("barmanObjectStore", {}),
+        ):
+            live = cluster_manifest(_PROPS, restore=False)
+            live["metadata"]["uid"] = "test-postgres"
+            live["spec"]["backup"][field] = value
+            self.api.get_namespaced_custom_object.return_value = live
+            with self.subTest(field=field), pytest.raises(RuntimeError):
+                Provider().create(_PROPS)
+        expect_equal(self.instance.open_databases.call_count, 0)
+        expect_equal(self.instance.initial_backup.call_count, 0)
+
+    def test_delete_refuses_a_replaced_cluster_before_quiescing(self) -> None:
+        """A same-name Cluster with a new UID must not enter destructive teardown."""
+        self.instance.cluster.return_value = {"metadata": {"uid": "another-cluster"}}
+        with pytest.raises(RuntimeError, match="identity changed"):
+            Provider().delete("test", _PROPS | {"cluster_uid": "original-cluster"})
+        expect_equal(self.delete.call_count, 0)
+        expect_equal(self.instance.quiesce.call_count, 0)
 
     def test_restore_uses_explicit_backup_and_no_new_base(self) -> None:
         """Bootstrap recovery from the completed backup inspected by the provider."""

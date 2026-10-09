@@ -8,9 +8,25 @@ import kubernetes.client
 import kubernetes.config
 import yaml
 from pulumi import Input, ResourceOptions, log
-from pulumi.dynamic import CreateResult, Resource, ResourceProvider, UpdateResult
+from pulumi.dynamic import (
+    CheckResult,
+    CreateResult,
+    DiffResult,
+    ReadResult,
+    Resource,
+    ResourceProvider,
+    UpdateResult,
+)
 
 from resources.postgres_archive import PostgresArchive
+from resources.postgres_config import (
+    INPUT_FIELDS,
+    check_inputs,
+    cluster_uid,
+    observed_properties,
+    require_archive_location,
+    require_valid_update,
+)
 from resources.postgres_lifecycle import (
     PostgresLifecycle,
     select_backup,
@@ -166,6 +182,30 @@ def _delete_if_exists(
             raise
 
 
+def _get_cluster(custom_api: kubernetes.client.CustomObjectsApi) -> dict | None:
+    try:
+        return custom_api.get_namespaced_custom_object(
+            _GROUP,
+            _VERSION,
+            _NAMESPACE,
+            "clusters",
+            _CLUSTER_NAME,
+            _request_timeout=_REQUEST_TIMEOUT,
+        )
+    except kubernetes.client.exceptions.ApiException as exc:
+        if exc.status != _HTTP_NOT_FOUND:
+            raise
+    return None
+
+
+def _require_cluster(custom_api: kubernetes.client.CustomObjectsApi) -> dict:
+    cluster = _get_cluster(custom_api)
+    if cluster is None:
+        msg = "Postgres Cluster is missing; run pulumi refresh before recreating it."
+        raise RuntimeError(msg)
+    return cluster
+
+
 def _wait_backups_complete(custom_api: kubernetes.client.CustomObjectsApi) -> None:
     """Wait for active backups; fail on a new failure or timeout."""
     deadline = time.monotonic() + _TIMEOUT
@@ -205,7 +245,6 @@ def _wait_backups_complete(custom_api: kubernetes.client.CustomObjectsApi) -> No
 def _wait_cluster_ready(custom_api: kubernetes.client.CustomObjectsApi) -> None:
     deadline = time.monotonic() + _TIMEOUT
     while time.monotonic() < deadline:
-        time.sleep(_POLL_INTERVAL)
         obj = custom_api.get_namespaced_custom_object(
             _GROUP,
             _VERSION,
@@ -221,6 +260,7 @@ def _wait_cluster_ready(custom_api: kubernetes.client.CustomObjectsApi) -> None:
             log.info(f"Postgres cluster '{_CLUSTER_NAME}' is ready.")
             return
         log.info("Waiting for cluster to become ready...")
+        time.sleep(_POLL_INTERVAL)
     msg = f"Cluster '{_CLUSTER_NAME}' not ready after {_TIMEOUT}s."
     raise TimeoutError(msg)
 
@@ -244,7 +284,15 @@ def _wait_pod_terminated(core_api: kubernetes.client.CoreV1Api) -> None:
 
 
 class _Provider(ResourceProvider):
+    def check(self, olds: dict, news: dict) -> CheckResult:
+        return CheckResult(inputs=news, failures=check_inputs(olds, news))
+
+    def diff(self, _id: str, olds: dict, news: dict) -> DiffResult:
+        fields = (*INPUT_FIELDS, "__provider")
+        return DiffResult(changes=any(olds.get(key) != news.get(key) for key in fields))
+
     def create(self, props: dict) -> CreateResult:
+        require_valid_update({}, props)
         client = _api_client(props["kubeconfig"])
         custom_api = kubernetes.client.CustomObjectsApi(client)
         lifecycle = PostgresLifecycle(client, props)
@@ -289,14 +337,70 @@ class _Provider(ResourceProvider):
                     raise
 
         _wait_cluster_ready(custom_api)
+        cluster = _require_cluster(custom_api)
+        outs = require_archive_location(cluster, props)
+        if outs["retention_policy"] != (props.get("retention_policy") or "1w"):
+            msg = "Existing Postgres retention differs from the requested policy."
+            raise RuntimeError(msg)
         lifecycle.clear_checkpoint()
         lifecycle.open_databases()
         if not restore:
             lifecycle.initial_backup(archive)
-        return CreateResult(id_="postgres-cluster", outs=props)
+        return CreateResult(id_="postgres-cluster", outs=outs)
 
-    def update(self, _id: str, _olds: dict, news: dict) -> UpdateResult:
-        return UpdateResult(outs=news)
+    def update(self, _id: str, olds: dict, news: dict) -> UpdateResult:
+        require_valid_update(olds, news)
+        with _api_client(news["kubeconfig"]) as client:
+            custom_api = kubernetes.client.CustomObjectsApi(client)
+            cluster = _require_cluster(custom_api)
+            expected_uid = olds.get("cluster_uid", "")
+            if not expected_uid and olds["kubeconfig"] != news["kubeconfig"]:
+                with _api_client(olds["kubeconfig"]) as old_client:
+                    old_api = kubernetes.client.CustomObjectsApi(old_client)
+                    expected_uid = cluster_uid(_require_cluster(old_api))
+            uid = cluster_uid(cluster, expected_uid)
+            require_archive_location(cluster, news)
+            if any(
+                olds.get(key) != news[key] for key in ("s3_access_key", "s3_secret_key")
+            ):
+                archive = PostgresArchive.from_props(news)
+                if not archive.backups(time.monotonic() + _TIMEOUT):
+                    msg = "New S3 credentials cannot read a completed base backup."
+                    raise RuntimeError(msg)
+            retention = news["retention_policy"]
+            if cluster["spec"]["backup"].get("retentionPolicy") != retention:
+                version = cluster["metadata"]["resourceVersion"]
+                custom_api.patch_namespaced_custom_object(
+                    _GROUP,
+                    _VERSION,
+                    _NAMESPACE,
+                    "clusters",
+                    _CLUSTER_NAME,
+                    {
+                        "metadata": {"resourceVersion": version},
+                        "spec": {"backup": {"retentionPolicy": retention}},
+                    },
+                    _request_timeout=_REQUEST_TIMEOUT,
+                )
+            _wait_cluster_ready(custom_api)
+            observed = require_archive_location(
+                _require_cluster(custom_api),
+                news | {"cluster_uid": uid},
+            )
+            if observed["retention_policy"] != retention:
+                msg = "Postgres retention update was not accepted."
+                raise RuntimeError(msg)
+            return UpdateResult(outs=observed)
+
+    def read(self, id_: str, props: dict) -> ReadResult:
+        with _api_client(props["kubeconfig"]) as client:
+            custom_api = kubernetes.client.CustomObjectsApi(client)
+            cluster = _get_cluster(custom_api)
+            if cluster is None:
+                return ReadResult(id_="", outs={})
+            observed = observed_properties(cluster, props)
+            inputs = {field: observed[field] for field in INPUT_FIELDS}
+            return ReadResult(id_=id_, outs=observed, inputs=inputs)
 
     def delete(self, _id: str, props: dict) -> None:
         client = _api_client(props["kubeconfig"])
@@ -310,6 +414,9 @@ class _Provider(ResourceProvider):
             lifecycle.resume_teardown(archive)
             _wait_pod_terminated(core_api)
             return
+
+        if props.get("cluster_uid"):
+            cluster_uid(cluster, props["cluster_uid"])
 
         log.info("Deleting scheduled backup CR...")
         _delete_if_exists(custom_api, "scheduledbackups", _SCHEDULED_BACKUP_NAME)
@@ -340,6 +447,16 @@ class PostgresCluster(Resource):
         opts: ResourceOptions | None = None,
     ) -> None:
         """Initialise the CloudNativePG cluster resource."""
+        opts = ResourceOptions.merge(
+            opts,
+            ResourceOptions(
+                additional_secret_outputs=[
+                    "kubeconfig",
+                    "s3_access_key",
+                    "s3_secret_key",
+                ],
+            ),
+        )
         super().__init__(
             _Provider(),
             name,
@@ -351,6 +468,7 @@ class PostgresCluster(Resource):
                 "s3_secret_key": s3.secret_key,
                 "databases": databases,
                 "retention_policy": s3.retention_policy,
+                "cluster_uid": None,
             },
             opts,
         )

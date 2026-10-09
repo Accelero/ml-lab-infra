@@ -1,30 +1,30 @@
-"""Dynamic Pulumi resource that patches admin_policy in SkyPilot's postgres config.
-
-SkyPilot's API server persists its full configuration as a YAML blob in postgres
-(table: config_yaml, key: api_server_config). Helm chart values are overridden by
-the database on startup, so admin_policy must be set directly in the DB.
-
-On create/update: reads the current config, sets admin_policy, UPSERTs back.
-On delete: reads the current config, removes admin_policy if present, writes back.
-"""
+"""Update SkyPilot's database-persisted admin policy and verify the result."""
 
 import time
 
-import kubernetes
 import kubernetes.client
 import kubernetes.config
 import yaml
-from kubernetes.stream import stream
-from psycopg2.extensions import adapt as _pg_adapt
 from pulumi import Input, ResourceOptions, log
 from pulumi.dynamic import CreateResult, Resource, ResourceProvider, UpdateResult
 
-_NAMESPACE = "infra"
-_POD = "postgres-1"
+from resources.postgres_exec import PostgresExec
+
 _DB = "skypilot_db"
 _CONFIG_KEY = "api_server_config"
 _POLL_INTERVAL = 10
-_TIMEOUT = 300  # 5 minutes — table appears after SkyPilot first start
+_TIMEOUT = 300
+_QUERY_TIMEOUT = 60
+_TABLE_EXISTS = (
+    "SELECT 1 FROM information_schema.tables "
+    "WHERE table_schema = 'public' AND table_name = 'config_yaml';"
+)
+_READ_CONFIG = "SELECT value FROM public.config_yaml WHERE key = :'config_key';"
+_WRITE_CONFIG = (
+    "INSERT INTO public.config_yaml (key, value) "
+    "VALUES (:'config_key', :'config_value') "
+    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;"
+)
 
 
 def _api_client(kubeconfig: str) -> kubernetes.client.ApiClient:
@@ -36,114 +36,93 @@ def _api_client(kubeconfig: str) -> kubernetes.client.ApiClient:
     return kubernetes.client.ApiClient(configuration=cfg)
 
 
-def _psql_exec(core_api: kubernetes.client.CoreV1Api, sql: str) -> str:
-    return stream(
-        core_api.connect_get_namespaced_pod_exec,
-        _POD,
-        _NAMESPACE,
-        command=["psql", "-U", "postgres", "-d", _DB, "-t", "-A", "-c", sql],
-        stderr=True,
-        stdin=False,
-        stdout=True,
-        tty=False,
-    )
+def _table_exists(executor: PostgresExec, timeout: float = _QUERY_TIMEOUT) -> bool:
+    result = executor.query(_TABLE_EXISTS, database=_DB, timeout=timeout)
+    if result not in {"", "1"}:
+        msg = "Unexpected response while checking the SkyPilot config table."
+        raise RuntimeError(msg)
+    return result == "1"
 
 
-def _wait_for_table(core_api: kubernetes.client.CoreV1Api) -> None:
-    """Poll until the config_yaml table exists. SkyPilot creates it on first start."""
-    check_sql = (
-        "SELECT 1 FROM information_schema.tables "
-        "WHERE table_schema = 'public' AND table_name = 'config_yaml';"
-    )
+def _wait_for_table(executor: PostgresExec) -> None:
+    """Wait for SkyPilot's schema, propagating command failures immediately."""
     deadline = time.monotonic() + _TIMEOUT
-    while time.monotonic() < deadline:
-        result = _psql_exec(core_api, check_sql)
-        if result.strip() == "1":
-            log.info("config_yaml table is ready.")
+    while (remaining := deadline - time.monotonic()) > 0:
+        if _table_exists(executor, min(_QUERY_TIMEOUT, remaining)):
             return
-        log.info("Waiting for config_yaml table to be created by SkyPilot...")
-        time.sleep(_POLL_INTERVAL)
+        log.info("Waiting for SkyPilot's config_yaml table...")
+        time.sleep(min(_POLL_INTERVAL, max(0, deadline - time.monotonic())))
     msg = f"config_yaml table did not appear within {_TIMEOUT}s."
     raise TimeoutError(msg)
 
 
-def _read_config(core_api: kubernetes.client.CoreV1Api) -> dict:
-    """Read the current SkyPilot API server config. Returns {} if absent."""
-    sql = f"SELECT value FROM config_yaml WHERE key = '{_CONFIG_KEY}';"  # noqa: S608
-    result = _psql_exec(core_api, sql).strip()
+def _read_config(executor: PostgresExec) -> dict:
+    """Distinguish an absent config row from failed SQL or invalid YAML."""
+    result = executor.query(_READ_CONFIG, {"config_key": _CONFIG_KEY}, database=_DB)
     if not result:
         return {}
-    return yaml.safe_load(result) or {}
+    try:
+        config = yaml.safe_load(result)
+    except yaml.YAMLError:
+        msg = "SkyPilot's persisted configuration is invalid YAML."
+        raise RuntimeError(msg) from None
+    if not isinstance(config, dict):
+        msg = "SkyPilot's persisted configuration must be a mapping."
+        raise TypeError(msg)
+    return config
 
 
-def _quote(value: str) -> str:
-    q = _pg_adapt(value)
-    q.encoding = "utf-8"
-    return q.getquoted().decode()
+def _write_config(executor: PostgresExec, config: dict) -> None:
+    variables = {
+        "config_key": _CONFIG_KEY,
+        "config_value": yaml.safe_dump(config),
+    }
+    executor.query(_WRITE_CONFIG, variables, database=_DB)
 
 
-def _write_config(core_api: kubernetes.client.CoreV1Api, config: dict) -> None:
-    """UPSERT the config dict into postgres as YAML."""
-    yaml_str = yaml.dump(config, default_flow_style=False)
-    key_q, val_q = _quote(_CONFIG_KEY), _quote(yaml_str)
-    sql = (
-        f"INSERT INTO config_yaml (key, value) VALUES ({key_q}, {val_q}) "  # noqa: S608
-        f"ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;"
-    )
-    _psql_exec(core_api, sql)
+def _apply_policy(props: dict) -> None:
+    policy = props["admin_policy"]
+    if not isinstance(policy, str) or not policy.strip():
+        msg = "SkyPilot admin policy must be a nonempty class path."
+        raise ValueError(msg)
+    with _api_client(props["kubeconfig"]) as client:
+        executor = PostgresExec(client)
+        _wait_for_table(executor)
+        config = _read_config(executor)
+        config["admin_policy"] = policy
+        _write_config(executor, config)
+        if _read_config(executor).get("admin_policy") != policy:
+            msg = "SkyPilot admin policy update could not be verified."
+            raise RuntimeError(msg)
 
 
 class _Provider(ResourceProvider):
     def create(self, props: dict) -> CreateResult:
-        client = _api_client(props["kubeconfig"])
-        core_api = kubernetes.client.CoreV1Api(client)
-
-        _wait_for_table(core_api)
-
-        config = _read_config(core_api)
-        config["admin_policy"] = props["admin_policy"]
-        log.info(f"Setting admin_policy to '{props['admin_policy']}'...")
-        _write_config(core_api, config)
-
+        _apply_policy(props)
         return CreateResult(id_="skypilot-admin-policy", outs=props)
 
     def update(self, _id: str, _olds: dict, news: dict) -> UpdateResult:
-        client = _api_client(news["kubeconfig"])
-        core_api = kubernetes.client.CoreV1Api(client)
-
-        _wait_for_table(core_api)
-
-        config = _read_config(core_api)
-        config["admin_policy"] = news["admin_policy"]
-        log.info(f"Re-applying admin_policy '{news['admin_policy']}'...")
-        _write_config(core_api, config)
-
+        _apply_policy(news)
         return UpdateResult(outs=news)
 
     def delete(self, _id: str, props: dict) -> None:
-        client = _api_client(props["kubeconfig"])
-        core_api = kubernetes.client.CoreV1Api(client)
-
-        try:
-            _wait_for_table(core_api)
-        except TimeoutError:
-            log.warn(
-                "config_yaml table not found during delete (pod may already be gone)."
-                " Skipping admin_policy removal.",
-            )
-            return
-
-        config = _read_config(core_api)
-        if "admin_policy" in config:
+        with _api_client(props["kubeconfig"]) as client:
+            executor = PostgresExec(client)
+            if not _table_exists(executor):
+                log.info("SkyPilot config table is absent; no policy to remove.")
+                return
+            config = _read_config(executor)
+            if "admin_policy" not in config:
+                return
             del config["admin_policy"]
-            log.info("Removing admin_policy from SkyPilot config...")
-            _write_config(core_api, config)
-        else:
-            log.info("admin_policy not present in config, nothing to remove.")
+            _write_config(executor, config)
+            if "admin_policy" in _read_config(executor):
+                msg = "SkyPilot admin policy removal could not be verified."
+                raise RuntimeError(msg)
 
 
 class SkyPilotAdminPolicy(Resource):
-    """Patches admin_policy in SkyPilot's postgres-persisted config on every deploy."""
+    """Manage the admin_policy field in SkyPilot's persisted configuration."""
 
     def __init__(
         self,
@@ -152,7 +131,11 @@ class SkyPilotAdminPolicy(Resource):
         admin_policy: Input[str],
         opts: ResourceOptions | None = None,
     ) -> None:
-        """Initialise the SkyPilot admin policy patcher resource."""
+        """Initialise the SkyPilot admin policy resource."""
+        opts = ResourceOptions.merge(
+            opts,
+            ResourceOptions(additional_secret_outputs=["kubeconfig"]),
+        )
         super().__init__(
             _Provider(),
             name,
