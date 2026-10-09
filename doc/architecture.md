@@ -114,21 +114,29 @@ The ACL policy enforces least-privilege between tagged devices:
 
 | Source tag | Can reach |
 | --- | --- |
-| `tag:k8s-operator` | `tag:k8s` (K3s apiserver + services), internet (HTTPS cert issuance) |
-| `tag:k8s` | `tag:k8s` (pod-to-pod mesh) |
+| `tag:k8s-operator` | `tag:k8s` operator proxies, internet (HTTPS cert issuance) |
+| `tag:k8s` | Other `tag:k8s` operator proxies |
 | `tag:hub-server` | `tag:k8s`, `tag:k8s-operator` |
 | `tag:skypilot-server` | `tag:hub-server`, `tag:k8s` |
-| `tag:skypilot-node` | `tag:k8s` (for MLflow access) |
+| `tag:skypilot-node` | `tag:mlflow` and `tag:skypilot-api`, TCP 443 only |
 | `autogroup:admin` | everything |
 | `autogroup:member` | `tag:k8s` services only |
 
-SkyPilot GPU nodes are tagged `tag:skypilot-node`. They can reach cluster services (MLflow,
-Postgres) over Tailscale, not the public internet.
+SkyPilot GPU nodes use `tag:skypilot-node`. MLflow and SkyPilot ingress proxies carry
+`tag:mlflow` and `tag:skypilot-api`, respectively, alongside `tag:k8s`. The Kubernetes
+operator owns both application tags. `tag:skypilot-server` identifies the OAuth client
+that provisions workers; it is separate from the SkyPilot ingress tag.
+
+Workers reach MLflow and the SkyPilot API over HTTPS. They upload artifacts directly
+to the public S3 endpoint using internet egress and the supplied bucket credentials.
+The worker grant does not allow direct access to Postgres, the hub, or other operator
+proxies. The policy includes TCP and UDP tests that Tailscale validates when applied.
+The operator depends on the ACL so the application tags exist before provisioning.
 
 ### Kubernetes network policies
 
-Both `infra` and `app` namespaces have default-deny-all ingress and egress policies. Explicit
-allow rules are added on top:
+Both `infra` and `app` namespaces have default-deny ingress policies. Egress is not
+restricted. Explicit ingress allow rules are added on top:
 
 - `app` namespace pods accept ingress only from the `tailscale` namespace (operator proxies).
 - `infra/postgres` accepts ingress from `app` on port 5432 and from `cnpg-system` (the operator).

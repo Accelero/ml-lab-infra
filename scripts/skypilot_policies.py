@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 """SkyPilot admin policy: composite policy that chains sub-policies in order.
 
 Each sub-policy is a ``sky.AdminPolicy`` subclass implementing
@@ -8,7 +9,7 @@ order, passing each policy's ``MutatedUserRequest`` as input to the next.
 To add a new sub-policy: subclass ``sky.AdminPolicy``, implement
 ``validate_and_mutate``, and append the class to
 ``SkyPilotAdminPolicy._policies``.
-"""  # noqa: INP001
+"""
 
 import json
 import os

@@ -75,7 +75,9 @@ use a different provider instead.
 
 | Key | Secret | Default | Description |
 | --- | --- | --- | --- |
-| `k3sVersion` | no | `v1.37.1+k3s1` | Project default pinned in `Pulumi.yaml`. Accepts an exact release or an official channel (`stable`, `latest`, `testing`, or a minor channel such as `v1.37`). Channels resolve during Pulumi evaluation and their resolved release participates in the installation trigger. Stack configuration overrides the project default. |
+| `k3sVersion` | no | `stable` | Project default declared in `Pulumi.yaml`. Accepts an exact release or an official channel (`stable`, `latest`, `testing`, or a minor channel such as `v1.37`). Channels resolve during Pulumi evaluation and their resolved release participates in the installation trigger. Stack configuration overrides the project default. |
+| `mlflowChartVersion` | no | `stable` | Exact MLflow Helm chart version or newest non-prerelease chart. This is the chart version, not the MLflow Python package version. |
+| `skypilotChartVersion` | no | `stable` | Exact SkyPilot Helm chart version or newest non-prerelease chart. |
 
 Pinned versions require no channel lookup and remain unchanged until configuration is edited.
 Channel resolution has a ten-second request timeout and rejects unexpected HTTP responses or
@@ -83,15 +85,35 @@ redirects. The installer always receives the resolved release through `INSTALL_K
 The `k3s_version` stack output reports the selected release; it does not independently verify the
 version running on the node.
 
-To pin an existing stack that overrides the project default:
+To make an existing stack track the stable channel:
 
 ```bash
-pulumi config set k3sVersion v1.37.1+k3s1
+pulumi config set k3sVersion stable
 ```
 
 Use `pulumi preview` before upgrading. For an existing cluster, move through consecutive minor
-versions and check operator and chart compatibility. The project pin is the newest non-prerelease
-as of 2026-10-09; it is not a floating `latest` channel.
+versions and check operator and chart compatibility. The project default tracks the
+official stable channel. Use an exact release such as `v1.37.1+k3s1` to hold a version
+until configuration changes.
+
+Helm chart configuration accepts `stable` or an exact SemVer version such as
+`0.14.0`. `stable` maps to Helm's `*` constraint, which excludes prereleases. Pulumi
+resolves the concrete chart version during planning and upgrades the release when
+that version changes. Exact pins stay fixed until configuration changes; explicit
+prerelease pins are supported. Version ranges and other channel names are rejected.
+
+```bash
+pulumi config set skypilotChartVersion stable
+pulumi config set mlflowChartVersion stable
+pulumi preview
+```
+
+Both defaults are declared in `Pulumi.yaml`. The `mlflow_chart_version` and
+`skypilot_chart_version` stack outputs report the resolved chart versions. Application
+images follow the selected chart's defaults; a chart version is not necessarily the
+application version. For an exact MLflow pin, use a version from the
+[MLflow chart releases](https://github.com/community-charts/helm-charts/releases),
+rather than the version of the local MLflow client.
 
 ## Sample Pulumi.dev.yaml
 
@@ -107,8 +129,12 @@ config:
   hub_server:serverType: cx33   # optional; default shown
   hub_server:location: fsn1     # optional; default shown
 
-  # K3s version (optional; project default is pinned)
-  # ml-lab-infra:k3sVersion: v1.37.1+k3s1
+  # K3s version (optional; project default tracks stable)
+  # ml-lab-infra:k3sVersion: stable
+
+  # Application Helm charts (optional; project defaults track stable)
+  # ml-lab-infra:mlflowChartVersion: stable
+  # ml-lab-infra:skypilotChartVersion: stable
 
   # Tailscale
   tailscale:tailnet: yourname.ts.net

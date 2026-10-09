@@ -7,5 +7,13 @@ runtime:
 config:
   k3sVersion:
     type: string
-    default: v1.37.1+k3s1
+    default: stable
     description: Exact K3s release or official channel resolved during Pulumi evaluation.
+  mlflowChartVersion:
+    type: string
+    default: stable
+    description: Exact MLflow Helm chart version or stable for the newest non-prerelease chart.
+  skypilotChartVersion:
+    type: string
+    default: stable
+    description: Exact SkyPilot Helm chart version or stable for the newest non-prerelease chart.

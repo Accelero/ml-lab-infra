@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 """Custom Pulumi resources."""
 
 from resources.postgres_cluster import PostgresCluster, S3Config

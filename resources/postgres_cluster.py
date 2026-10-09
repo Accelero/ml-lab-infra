@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 """Restore CloudNativePG from S3 and verify WAL coverage before teardown."""
 
 import dataclasses

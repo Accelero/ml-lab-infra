@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 """Quiesce Postgres and verify its recovery archive before deletion."""
 
 import hashlib

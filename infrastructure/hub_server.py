@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 """The hub server setup."""
 
 from pathlib import Path

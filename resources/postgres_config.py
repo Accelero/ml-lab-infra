@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 """Validate Postgres inputs and observe the configuration owned by Pulumi."""
 
 import re

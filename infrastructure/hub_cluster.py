@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 """Cluster installation and kubeconfig export for the hub server."""
 
 import pulumi

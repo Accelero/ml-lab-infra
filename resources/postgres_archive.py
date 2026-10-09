@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 """Validate Barman base backups and WAL coverage in S3."""
 
 import gzip

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 """Tailscale Configuration."""
 
 import json
@@ -34,52 +35,70 @@ acl = tailscale.Acl(
             "tagOwners": {
                 "tag:k8s-operator": ["autogroup:admin"],
                 "tag:k8s": ["tag:k8s-operator"],
+                "tag:mlflow": ["tag:k8s-operator"],
+                "tag:skypilot-api": ["tag:k8s-operator"],
                 "tag:hub-server": ["autogroup:admin"],
                 "tag:skypilot-server": ["autogroup:admin"],
                 "tag:skypilot-node": ["tag:skypilot-server"],
             },
             "grants": [
-                # k8s-operator can reach k8s nodes and the internet (HTTPS certs)
+                # The operator provisions proxies and requests HTTPS certificates.
                 {
                     "src": ["tag:k8s-operator"],
                     "dst": ["tag:k8s", "autogroup:internet"],
                     "ip": ["*"],
                 },
-                # k8s nodes can talk to each other (pod/service mesh traffic)
                 {
                     "src": ["tag:k8s"],
                     "dst": ["tag:k8s"],
                     "ip": ["*"],
                 },
-                # hub-server can reach k8s nodes and the operator
                 {
                     "src": ["tag:hub-server"],
                     "dst": ["tag:k8s", "tag:k8s-operator"],
                     "ip": ["*"],
                 },
-                # skypilot-server can reach hub-server and k8s nodes
                 {
                     "src": ["tag:skypilot-server"],
                     "dst": ["tag:hub-server", "tag:k8s"],
                     "ip": ["*"],
                 },
-                # skypilot-nodes can reach k8s services like MLflow and SkyPilot-server
                 {
                     "src": ["tag:skypilot-node"],
-                    "dst": ["tag:k8s"],
-                    "ip": ["*"],
+                    "dst": ["tag:mlflow", "tag:skypilot-api"],
+                    "ip": ["tcp:443"],
                 },
-                # admins can reach everything
                 {
                     "src": ["autogroup:admin"],
                     "dst": ["*"],
                     "ip": ["*"],
                 },
-                # regular users can reach k8s services
                 {
                     "src": ["autogroup:member"],
                     "dst": ["tag:k8s"],
                     "ip": ["*"],
+                },
+            ],
+            "tests": [
+                {
+                    "src": "tag:skypilot-node",
+                    "proto": "tcp",
+                    "accept": ["tag:mlflow:443", "tag:skypilot-api:443"],
+                    "deny": [
+                        "tag:mlflow:22",
+                        "tag:mlflow:80",
+                        "tag:skypilot-api:22",
+                        "tag:skypilot-api:80",
+                        "tag:hub-server:22",
+                        "tag:hub-server:6443",
+                        "tag:k8s-operator:443",
+                        "tag:skypilot-node:22",
+                    ],
+                },
+                {
+                    "src": "tag:skypilot-node",
+                    "proto": "udp",
+                    "deny": ["tag:mlflow:443", "tag:skypilot-api:443"],
                 },
             ],
         },

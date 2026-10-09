@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 """Helm releases and Kubernetes resources for the hub cluster."""
 
 import hashlib
@@ -13,6 +14,7 @@ from infrastructure.hub_cluster import (
     hub_kubeconfig_cmd,
 )
 from infrastructure.tailscale import (
+    acl,
     operator_oauth_client,
     skypilot_ts_oauth_client,
 )
@@ -22,7 +24,11 @@ from resources import (
     SkyPilotAdminPolicy,
     TailscaleDeviceCleanup,
 )
+from resources.helm_version import helm_chart_version
 
+_config = pulumi.Config()
+_mlflow_chart_version = helm_chart_version(_config.require("mlflowChartVersion"))
+_skypilot_chart_version = helm_chart_version(_config.require("skypilotChartVersion"))
 _backup_config = pulumi.Config("backup")
 _mlflow_config = pulumi.Config("mlflow")
 _runpod_config = pulumi.Config("runpod")
@@ -250,7 +256,7 @@ tailscale_operator = k8s.helm.v3.Release(
     opts=pulumi.ResourceOptions(
         parent=ns_tailscale,
         provider=hub_k8s_provider,
-        depends_on=[tailscale_operator_secret],
+        depends_on=[acl, tailscale_operator_secret],
     ),
 )
 
@@ -395,6 +401,7 @@ mlflow = k8s.helm.v3.Release(
     "mlflow",
     name="mlflow",
     chart="mlflow",
+    version=_mlflow_chart_version,
     namespace=ns_app.metadata["name"],
     repository_opts=k8s.helm.v3.RepositoryOptsArgs(
         repo="https://community-charts.github.io/helm-charts",
@@ -445,6 +452,7 @@ mlflow = k8s.helm.v3.Release(
         "ingress": {
             "enabled": True,
             "className": "tailscale",
+            "annotations": {"tailscale.com/tags": "tag:k8s,tag:mlflow"},
             "hosts": [
                 {
                     "host": "mlflow",
@@ -524,6 +532,7 @@ skypilot = k8s.helm.v3.Release(
     "skypilot",
     name="skypilot",
     chart="skypilot",
+    version=_skypilot_chart_version,
     namespace=ns_app.metadata["name"],
     repository_opts=k8s.helm.v3.RepositoryOptsArgs(
         repo="https://helm.skypilot.co",
@@ -604,6 +613,7 @@ skypilot = k8s.helm.v3.Release(
         "ingress": {
             "enabled": True,
             "ingressClassName": "tailscale",
+            "annotations": {"tailscale.com/tags": "tag:k8s,tag:skypilot-api"},
             "host": "skypilot",
             "path": "/",
             "tls": {"enabled": True, "secretName": "skypilot-tls"},
@@ -634,3 +644,6 @@ skypilot_admin_policy = SkyPilotAdminPolicy(
         depends_on=[skypilot],
     ),
 )
+
+pulumi.export("mlflow_chart_version", mlflow.version)
+pulumi.export("skypilot_chart_version", skypilot.version)

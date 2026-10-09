@@ -15,12 +15,15 @@ jobs to RunPod.
 - `infrastructure/hub_cluster.py`: K3s installation, secret kubeconfig output,
   Kubernetes provider. K3s binds to the Tailscale interface; the exported
   `hub_kubeconfig` replaces localhost with the server's Tailscale IP.
-- `resources/k3s_version.py`: validated channel resolution. The default release
-  is pinned in `Pulumi.yaml`; stack config can override it. Keep the resolved
+- `resources/k3s_version.py`: validated channel resolution. The project default
+  tracks `stable` in `Pulumi.yaml`; stack config can override it. Keep the resolved
   version in the installation trigger and use `INSTALL_K3S_VERSION`.
 - `infrastructure/tailscale.py`: tailnet ACL, settings, workload OAuth clients.
 - `infrastructure/apps.py`: namespaces, network policies, Helm releases,
-  credentials, Postgres and application wiring.
+  credentials, Postgres and application wiring. `mlflowChartVersion` and
+  `skypilotChartVersion` accept exact chart versions or `stable`; project defaults
+  track stable charts. `resources/helm_version.py` validates pins and maps stable
+  to Helm's non-prerelease constraint. Chart versions differ from app versions.
 - `resources/postgres_cluster.py`: `PostgresCluster`, the dynamic provider for
   CNPG creation, recovery, updates, refresh, and verified teardown.
   `resources/postgres_config.py` validates inputs and reads managed configuration.
@@ -83,10 +86,12 @@ or use unsafe fixes merely to obtain a passing check.
   by default in `app` and `infra`. They do not currently deny egress.
 - Tailnet grants currently allow the operator to reach `tag:k8s` and the
   internet, `tag:k8s` peers to communicate, the hub to reach Kubernetes and the
-  operator, and SkyPilot's server to reach the hub and Kubernetes. Workers use
-  `tag:skypilot-node` and can reach `tag:k8s`; members can also reach `tag:k8s`,
-  while admins can reach everything. These grants allow all protocols/ports;
-  review `infrastructure/tailscale.py` before changing access.
+  operator, and SkyPilot's provisioning identity to reach the hub and proxies.
+  Workers use `tag:skypilot-node` and can reach only `tag:mlflow` and
+  `tag:skypilot-api` on TCP 443. Both ingress proxies retain `tag:k8s` for member
+  and service access; admins can reach everything. Other grants allow all
+  protocols/ports. Preserve the policy tests in `infrastructure/tailscale.py` and
+  the operator's dependency on the ACL. Public S3 access uses internet egress.
 - Preserve Pulumi resource names, parents, providers, and dependency ordering.
   Renaming or reparenting resources can cause replacement; inspect the preview
   and provide aliases when retaining existing resource identity.

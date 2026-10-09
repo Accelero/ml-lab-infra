@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 """Custom Pulumi resource to cleanup Tailscale nodes."""
 
 import base64

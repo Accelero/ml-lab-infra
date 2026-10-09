@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 """Regression coverage for Barman metadata and complete WAL ancestry."""
 
 import gzip

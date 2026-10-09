@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 # ruff: noqa: S101, INP001  # assert is idiomatic in pytest
 """SkyPilot MLflow integration test: managed job → MLflow tracking → S3 artifact.
 

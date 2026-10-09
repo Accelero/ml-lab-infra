@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 """ML Lab Infrastructure Pulumi Program."""
 
 import infrastructure.apps

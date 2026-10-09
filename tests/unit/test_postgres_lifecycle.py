@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 """Ensure every deletion failure preserves Postgres infrastructure."""
 
 import json

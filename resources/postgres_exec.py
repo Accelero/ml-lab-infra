@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 """Run checked psql commands on the current CloudNativePG primary."""
 
 import base64

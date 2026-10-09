@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 """Reject failed or unverified SkyPilot policy writes without deployed services."""
 
 import unittest

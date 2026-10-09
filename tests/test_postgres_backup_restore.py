@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 # ruff: noqa: S101, INP001  # assert is idiomatic in pytest; tests/ is not a package
 """Integration test: PostgreSQL backup and restore via CloudNativePG + S3.
 

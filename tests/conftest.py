@@ -1,3 +1,4 @@
+# Copyright (c) 2026 David Schmid
 # ruff: noqa: INP001  # tests/ is not a package
 """Shared fixtures for all integration tests."""
 
