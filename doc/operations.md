@@ -13,11 +13,12 @@ pulumi up
 
 What happens during a first deploy (~5 minutes):
 
-1. Hetzner SSH key created, server provisioned, cloud-init runs (Sever joins tailnet)
+1. Hetzner SSH key created, server provisioned, cloud-init runs (server joins tailnet)
 2. K3s installed over SSH on the Tailscale interface
-3. Tailscale operator, CNPG, MLflow, and SkyPilot Helm releases deployed
-4. Postgres cluster created (initdb on first deploy; recovery from S3 if a backup exists)
-5. SkyPilot admin policy upserted into Postgres
+3. Tailscale operator and CNPG deployed
+4. Postgres created or recovered from a completed S3 base backup. A fresh cluster completes an
+   initial base backup and verifies its WAL archive before applications deploy.
+5. MLflow and SkyPilot deployed; SkyPilot admin policy upserted into Postgres
 
 ## Teardown
 
@@ -25,8 +26,21 @@ What happens during a first deploy (~5 minutes):
 pulumi down
 ```
 
-Resources are destroyed in reverse dependency order. The Postgres cluster deletion blocks while CloudNativePG archives the final WAL segment to S3. This is intentional:
-`pulumi down` does not return until the data is safely in S3.
+Resources are destroyed in reverse dependency order. Postgres teardown takes no new base backup.
+It drains application sessions, blocks new connections, creates a restore point, switches WAL,
+and checks S3 for a completed base backup plus every required WAL segment through that cutoff.
+Only then does it delete the Cluster and wait for its pods to exit.
+
+The archive gate, active backup wait, and pod wait each have a ten-minute deadline. Timeout or
+verification failure stops teardown; the provider never proceeds with missing archive data.
+Fix S3 access, archiving, or backup problems and rerun `pulumi down`. A failed archive gate
+restores database connection settings, although dependent applications may already be removed.
+
+If Cluster deletion fails after the gate succeeds, application connections remain disabled.
+Retry teardown to complete deletion. If returning the live cluster to service instead, reopen
+its application databases through the `postgres` administration database before redeploying
+applications. Do not remove the `postgres-teardown-checkpoint` ConfigMap while a deletion is
+in progress; it lets retries recheck the archive when the primary is already gone.
 
 Tailscale devices (`hub-server` and `tailscale-operator`) are deregistered from the tailnet
 automatically.
@@ -38,7 +52,12 @@ pulumi up
 ```
 
 No flags or manual steps needed. The `PostgresCluster` resource detects the backup in S3 and
-bootstraps via recovery. MLflow experiment history and SkyPilot job history are preserved.
+bootstraps via recovery, then reopens application connections. MLflow experiment history and
+SkyPilot job history are preserved when the archive remains intact.
+
+Apply this provider change with `pulumi up` before relying on it for an existing stack's next
+teardown. If that stack lacks a completed base backup, trigger and complete a manual backup
+before teardown; teardown will refuse to create one for you.
 
 ## Accessing services
 
@@ -78,9 +97,18 @@ To add a new sub-policy:
 3. Append the class to `SkyPilotAdminPolicy._policies`
 4. Run `pulumi up`
 
-## Running the integration tests
+## Running tests
 
-Tests hit a live deployed stack. They read credentials from Pulumi stack outputs and config at
+Isolated lifecycle and archive tests require no deployed infrastructure:
+
+```bash
+uv run python -m pytest tests/unit -q
+```
+
+Run the live restore test periodically to verify backup contents, since archive inventory
+checks cannot detect corruption.
+
+Integration tests hit a live deployed stack. They read credentials from Pulumi stack outputs and config at
 runtime, so the stack must be deployed before running tests.
 
 ```bash

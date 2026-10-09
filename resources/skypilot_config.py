@@ -30,7 +30,8 @@ _TIMEOUT = 300  # 5 minutes — table appears after SkyPilot first start
 def _api_client(kubeconfig: str) -> kubernetes.client.ApiClient:
     cfg = kubernetes.client.Configuration()
     kubernetes.config.load_kube_config_from_dict(
-        yaml.safe_load(kubeconfig), client_configuration=cfg,
+        yaml.safe_load(kubeconfig),
+        client_configuration=cfg,
     )
     return kubernetes.client.ApiClient(configuration=cfg)
 

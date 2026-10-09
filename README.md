@@ -77,11 +77,14 @@ sky api login --endpoint https://skypilot.<tailnet>.ts.net
 ## Teardown and restore
 
 ```bash
-pulumi down   # archives final WAL to S3, then destroys all cloud resources
+pulumi down   # verifies the base backup and WAL through a write cutoff, then destroys resources
 pulumi up     # detects the backup in S3 and restores automatically
 ```
 
-Only S3 billing continues between teardown and restore. All experiment and job history is preserved.
+First deployment completes an initial base backup before applications start. Teardown uses WAL
+and takes no new base backup; missing backup or WAL objects stop teardown. Only S3 billing
+continues between teardown and restore. Keep the archive intact to preserve experiment and job
+history, and run periodic restore tests to verify its contents.
 
 ## Documentation
 

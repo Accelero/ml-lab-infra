@@ -1,22 +1,21 @@
-"""Custom Pulumi resource managing a CloudNativePG cluster.
-
-On create: checks S3 for an existing backup; restores if found, otherwise runs initdb.
-On delete: deletes the cluster and waits for the pod to fully terminate.
-           CNPG's graceful shutdown does a final checkpoint, WAL switch, and archives
-           the last segment before the pod exits.
-"""
+"""Restore CloudNativePG from S3 and verify WAL coverage before teardown."""
 
 import dataclasses
 import time
 
-import boto3
-import botocore.config
 import kubernetes
 import kubernetes.client
 import kubernetes.config
 import yaml
 from pulumi import Input, ResourceOptions, log
 from pulumi.dynamic import CreateResult, Resource, ResourceProvider, UpdateResult
+
+from resources.postgres_archive import PostgresArchive
+from resources.postgres_lifecycle import (
+    PostgresLifecycle,
+    select_backup,
+    wait_for_archive,
+)
 
 _NAMESPACE = "infra"
 _CLUSTER_NAME = "postgres"
@@ -27,6 +26,7 @@ _VERSION = "v1"
 _HTTP_NOT_FOUND = 404
 _HTTP_CONFLICT = 409
 _SCHEDULED_BACKUP_NAME = "postgres-scheduled-backup"
+_REQUEST_TIMEOUT = (5, 30)
 
 
 @dataclasses.dataclass
@@ -49,23 +49,6 @@ def _api_client(kubeconfig: str) -> kubernetes.client.ApiClient:
     return kubernetes.client.ApiClient(configuration=cfg)
 
 
-def _has_backup(props: dict) -> bool:
-    """Return True if at least one base backup exists in S3."""
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=props["s3_endpoint"],
-        aws_access_key_id=props["s3_access_key"],
-        aws_secret_access_key=props["s3_secret_key"],
-        config=botocore.config.Config(signature_version="s3v4"),
-    )
-    # CNPG barman stores base backups at:
-    # {destinationPath}/{cluster-name}/base/{backup-label}/
-    # destinationPath = s3://{bucket}/postgres  →  key prefix = postgres/{cluster}/base/
-    prefix = f"{_CLUSTER_NAME}/base/"
-    resp = s3.list_objects_v2(Bucket=props["s3_bucket"], Prefix=prefix, MaxKeys=1)
-    return resp.get("KeyCount", 0) > 0
-
-
 def _s3_store(props: dict) -> dict:
     return {
         "destinationPath": f"s3://{props['s3_bucket']}",
@@ -83,7 +66,7 @@ def _s3_store(props: dict) -> dict:
     }
 
 
-def _cluster_manifest(props: dict, *, restore: bool) -> dict:
+def _cluster_manifest(props: dict, *, restore: bool, backup_id: str = "") -> dict:
     store = _s3_store(props)
     backup_store = {**store, "wal": {"compression": "gzip"}}
     retention_policy = props.get("retention_policy") or "1w"
@@ -101,7 +84,12 @@ def _cluster_manifest(props: dict, *, restore: bool) -> dict:
     ]
 
     if restore:
-        bootstrap = {"recovery": {"source": "backup-source"}}
+        bootstrap = {
+            "recovery": {
+                "source": "backup-source",
+                "recoveryTarget": {"backupID": backup_id},
+            },
+        }
         extra = {
             "externalClusters": [
                 {
@@ -171,6 +159,7 @@ def _delete_if_exists(
             _NAMESPACE,
             plural,
             name,
+            _request_timeout=_REQUEST_TIMEOUT,
         )
     except kubernetes.client.exceptions.ApiException as exc:
         if exc.status != _HTTP_NOT_FOUND:
@@ -178,26 +167,39 @@ def _delete_if_exists(
 
 
 def _wait_backups_complete(custom_api: kubernetes.client.CustomObjectsApi) -> None:
-    """Wait for any in-progress Backup CRs to reach a terminal phase."""
+    """Wait for active backups; fail on a new failure or timeout."""
     deadline = time.monotonic() + _TIMEOUT
+    watched = set()
     while time.monotonic() < deadline:
         items = custom_api.list_namespaced_custom_object(
             _GROUP,
             _VERSION,
             _NAMESPACE,
             "backups",
+            _request_timeout=_REQUEST_TIMEOUT,
         ).get("items", [])
         in_progress = [
             b["metadata"]["name"]
             for b in items
             if b.get("status", {}).get("phase") not in {"completed", "failed"}
         ]
+        failed = [
+            backup["metadata"]["name"]
+            for backup in items
+            if backup.get("status", {}).get("phase") == "failed"
+            and backup["metadata"]["name"] in watched
+        ]
+        if failed:
+            msg = f"Active Postgres backups failed: {failed}. Refusing teardown."
+            raise RuntimeError(msg)
+        watched.update(in_progress)
         if not in_progress:
             log.info("All backups reached a terminal phase.")
             return
         log.info(f"Waiting for backups to finish: {in_progress}")
         time.sleep(_POLL_INTERVAL)
-    log.warn(f"Backups still in progress after {_TIMEOUT}s, proceeding anyway.")
+    msg = "Postgres backups remain in progress; refusing teardown."
+    raise TimeoutError(msg)
 
 
 def _wait_cluster_ready(custom_api: kubernetes.client.CustomObjectsApi) -> None:
@@ -210,7 +212,11 @@ def _wait_cluster_ready(custom_api: kubernetes.client.CustomObjectsApi) -> None:
             _NAMESPACE,
             "clusters",
             _CLUSTER_NAME,
+            _request_timeout=_REQUEST_TIMEOUT,
         )
+        if obj.get("metadata", {}).get("deletionTimestamp"):
+            msg = "Existing Postgres cluster is being deleted; refusing startup."
+            raise RuntimeError(msg)
         if obj.get("status", {}).get("readyInstances", 0) > 0:
             log.info(f"Postgres cluster '{_CLUSTER_NAME}' is ready.")
             return
@@ -220,35 +226,46 @@ def _wait_cluster_ready(custom_api: kubernetes.client.CustomObjectsApi) -> None:
 
 
 def _wait_pod_terminated(core_api: kubernetes.client.CoreV1Api) -> None:
-    """Wait for cluster pods to exit before secrets are deleted.
-
-    Ensures WAL archiving completes: barman must finish uploading the final
-    WAL segment before Pulumi removes the S3 credentials secret.
-    """
+    """Keep infrastructure available until every Postgres pod has exited."""
     deadline = time.monotonic() + _TIMEOUT
     while time.monotonic() < deadline:
         time.sleep(_POLL_INTERVAL)
         pods = core_api.list_namespaced_pod(
             _NAMESPACE,
             label_selector=f"cnpg.io/cluster={_CLUSTER_NAME}",
+            _request_timeout=_REQUEST_TIMEOUT,
         )
         if not pods.items:
-            log.info("Cluster pod terminated. Final WAL archived.")
+            log.info("Postgres cluster pods terminated.")
             return
         log.info("Waiting for cluster pod to terminate...")
-    log.warn(f"Cluster pod did not terminate within {_TIMEOUT}s, proceeding anyway.")
+    msg = "Postgres pods have not terminated; refusing further teardown."
+    raise TimeoutError(msg)
 
 
 class _Provider(ResourceProvider):
     def create(self, props: dict) -> CreateResult:
         client = _api_client(props["kubeconfig"])
         custom_api = kubernetes.client.CustomObjectsApi(client)
-        core_api = kubernetes.client.CoreV1Api(client)
-
-        restore = _has_backup(props)
+        lifecycle = PostgresLifecycle(client, props)
+        archive = PostgresArchive.from_props(props)
+        deadline = time.monotonic() + _TIMEOUT
+        backups = archive.backups(deadline)
+        restore = bool(backups)
+        if (
+            not restore
+            and lifecycle.cluster() is None
+            and archive.objects("postgres/", deadline)
+        ):
+            msg = "Archive contains data but no completed base backup; refusing initdb."
+            raise RuntimeError(msg)
         log.info(f"Bootstrapping cluster via {'recovery' if restore else 'initdb'}...")
 
-        manifest = _cluster_manifest(props, restore=restore)
+        manifest = _cluster_manifest(
+            props,
+            restore=restore,
+            backup_id=backups[0].identifier if backups else "",
+        )
         crd_deadline = time.monotonic() + 120
         while True:
             try:
@@ -258,29 +275,13 @@ class _Provider(ResourceProvider):
                     _NAMESPACE,
                     "clusters",
                     manifest,
+                    _request_timeout=_REQUEST_TIMEOUT,
                 )
                 break
             except kubernetes.client.exceptions.ApiException as e:
                 if e.status == _HTTP_CONFLICT:
-                    log.info("Cluster already exists; checking health...")
-                    obj = custom_api.get_namespaced_custom_object(
-                        _GROUP, _VERSION, _NAMESPACE, "clusters", _CLUSTER_NAME,
-                    )
-                    if obj.get("status", {}).get("readyInstances", 0) > 0:
-                        log.info(
-                            "Existing cluster is healthy, waiting for readiness...",
-                        )
-                        break
-                    log.info(
-                        "Orphaned cluster is unhealthy; deleting and recreating...",
-                    )
-                    custom_api.delete_namespaced_custom_object(
-                        _GROUP, _VERSION, _NAMESPACE, "clusters", _CLUSTER_NAME,
-                    )
-                    _wait_pod_terminated(core_api)
-                    # Reset CRD deadline for the next create attempt.
-                    crd_deadline = time.monotonic() + 120
-                    continue
+                    log.info("Existing Postgres cluster found; waiting for readiness.")
+                    break
                 if e.status == _HTTP_NOT_FOUND and time.monotonic() < crd_deadline:
                     log.info("CNPG CRDs not registered yet, retrying in 10s...")
                     time.sleep(10)
@@ -288,6 +289,10 @@ class _Provider(ResourceProvider):
                     raise
 
         _wait_cluster_ready(custom_api)
+        lifecycle.clear_checkpoint()
+        lifecycle.open_databases()
+        if not restore:
+            lifecycle.initial_backup(archive)
         return CreateResult(id_="postgres-cluster", outs=props)
 
     def update(self, _id: str, _olds: dict, news: dict) -> UpdateResult:
@@ -297,39 +302,34 @@ class _Provider(ResourceProvider):
         client = _api_client(props["kubeconfig"])
         custom_api = kubernetes.client.CustomObjectsApi(client)
         core_api = kubernetes.client.CoreV1Api(client)
+        lifecycle = PostgresLifecycle(client, props)
+        archive = PostgresArchive.from_props(props)
 
-        # Stop scheduled backups so none can start while we're tearing down.
+        cluster = lifecycle.cluster()
+        if cluster is None or cluster.get("metadata", {}).get("deletionTimestamp"):
+            lifecycle.resume_teardown(archive)
+            _wait_pod_terminated(core_api)
+            return
+
         log.info("Deleting scheduled backup CR...")
         _delete_if_exists(custom_api, "scheduledbackups", _SCHEDULED_BACKUP_NAME)
-
-        # Wait for any backup already in flight to reach a terminal state.
         _wait_backups_complete(custom_api)
 
-        log.info(
-            f"Deleting cluster '{_CLUSTER_NAME}'."
-            " CNPG will flush and archive final WAL on shutdown...",
-        )
-        try:
-            custom_api.delete_namespaced_custom_object(
-                _GROUP,
-                _VERSION,
-                _NAMESPACE,
-                "clusters",
-                _CLUSTER_NAME,
-            )
-        except kubernetes.client.exceptions.ApiException as exc:
-            if exc.status == _HTTP_NOT_FOUND:
-                log.info("Cluster already gone, skipping delete.")
-                return
-            raise
+        lifecycle.clear_checkpoint()
+        with lifecycle.quiesce():
+            deadline = time.monotonic() + _TIMEOUT
+            target = lifecycle.cutoff()
+            backup = select_backup(archive, target, deadline)
+            wait_for_archive(archive, backup, target, deadline)
+            lifecycle.save_checkpoint(backup, target)
 
-        # Wait for pod to exit before returning. Prevents Pulumi from deleting the
-        # S3 credentials secret while barman is still uploading the final WAL segment.
+        log.info("Recovery archive verified; deleting Postgres cluster.")
+        _delete_if_exists(custom_api, "clusters", _CLUSTER_NAME)
         _wait_pod_terminated(core_api)
 
 
 class PostgresCluster(Resource):
-    """CNPG Postgres cluster: restores from S3 on create, flushes WAL on delete."""
+    """CNPG cluster with an initial base backup and a WAL-verified teardown."""
 
     def __init__(
         self,

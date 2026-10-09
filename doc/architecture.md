@@ -143,6 +143,8 @@ Postgres data is continuously archived to S3 via barman (CloudNativePG's built-i
   written. Compression: gzip.
 - **Scheduled base backup**: daily at 03:00 UTC via a `ScheduledBackup` CR. Base backups land in
   `s3://<bucket>/postgres/base/`.
+- **Initial base backup**: a new cluster without a completed base backup takes one immediately
+  and verifies its WAL coverage before application deployment can proceed.
 - **Retention**: controlled by `backup:retentionPolicy` (default `1w`). Barman enforces this after
   each base backup.
 
@@ -152,26 +154,44 @@ The `PostgresCluster` custom resource (`resources/postgres_cluster.py`) blocks `
 data is safely archived:
 
 1. Deletes the `ScheduledBackup` CR to prevent new backups from starting.
-2. Waits for any in-flight backup to reach a terminal phase (completed or failed).
-3. Deletes the `Cluster` CR. CNPG performs a graceful shutdown: final checkpoint, WAL switch, WAL
-   archival.
-4. Waits for the Postgres pod to terminate before returning. This ensures the final WAL segment
-   reaches S3 before Pulumi removes the S3 credentials secret.
+2. Waits for any in-flight backups to complete. An observed active backup failing aborts teardown.
+3. Disables connections to the application databases and terminates their sessions.
+4. Creates a unique restore point and switches WAL to close its segment.
+5. Requires a completed base backup for the live PostgreSQL system and checks every required
+   nonempty WAL object in S3 through the cutoff, including timeline ancestry and history files.
+6. Saves the verified backup and cutoff in a ConfigMap, then deletes the `Cluster` CR.
+7. Waits for all Postgres pods to terminate before returning and releasing dependent credentials
+   and infrastructure.
 
-Typical extra wait during `pulumi down`: 30-60 seconds after the cluster deletion is issued.
+Teardown never starts a new base backup. Its archive gate polls for up to ten minutes; missing
+objects or any verification error abort teardown before cluster deletion. Backup and pod waits
+also raise on timeout. Pod termination alone is not evidence of successful archival.
+
+If the archive gate fails, the provider restores the previous database connection settings.
+A retry after the Cluster has disappeared or started terminating requires the saved cutoff and
+rechecks its S3 coverage. The checkpoint survives Cluster deletion and is cleared before a
+subsequent startup accepts application writes.
+
+The S3 check verifies completed backup metadata, base-data archive presence, and WAL object
+coverage. It does not prove that their contents are readable or free of corruption. Periodic
+restore tests remain necessary. Validation currently supports full Barman backups without
+custom tablespaces and gzip or uncompressed WAL, matching this stack's configuration.
 
 ### Restore
 
-On `pulumi up`, `PostgresCluster.create()` calls `_has_backup()`, which lists objects under
-`s3://<bucket>/postgres/base/` using boto3. If any objects exist, the cluster manifest bootstraps
-via `recovery` mode:
+On `pulumi up`, `PostgresCluster.create()` reads Barman metadata under
+`s3://<bucket>/postgres/base/` using boto3. It requires `status=DONE`, consistent backup metadata,
+and a nonempty base-data archive. If a completed backup exists, recovery uses its explicit ID:
 
 - Points barman at the S3 backup source.
 - Sets `cnpg.io/skipEmptyWalArchiveCheck: enabled` to avoid a false-positive check on the newly
   created cluster before it archives its first WAL.
 
-If no backup is found (first deploy), the cluster bootstraps via `initdb`, creating the two
-databases and roles from scratch.
+If the archive is empty (first deploy), the cluster bootstraps via `initdb`, creating the two
+databases and roles, and completes its initial base backup. An archive containing WAL or
+incomplete backups without a completed base is rejected rather than overwritten by a new
+cluster. An existing unready Cluster is waited on, never automatically deleted and recreated.
+After recovery, the provider reopens the application databases disabled at the teardown cutoff.
 
 ## SkyPilot Tailscale injection
 
