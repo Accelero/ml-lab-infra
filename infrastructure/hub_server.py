@@ -1,6 +1,7 @@
 # Copyright (c) 2026 David Schmid
 """The hub server setup."""
 
+import hashlib
 from pathlib import Path
 
 import pulumi
@@ -9,6 +10,7 @@ import pulumi_tailscale as tailscale
 import pulumi_tls as tls
 
 from resources import TailscaleDeviceCleanup
+from resources.hub_bootstrap import hub_bootstrap_hint
 
 _hcloud_config = pulumi.Config("hub_server")
 _server_type = _hcloud_config.get("serverType") or "cx33"
@@ -82,6 +84,20 @@ hub_server = hcloud.Server(
         },
     ],
     user_data=user_data,
+    opts=pulumi.ResourceOptions(
+        # Key renewal must not rebuild the VM; template edits still must.
+        ignore_changes=["userData"],
+        replacement_trigger=hashlib.sha256(script_body.encode()).hexdigest(),
+        hooks=pulumi.ResourceHookBinding(
+            before_create=[
+                pulumi.ResourceHook(
+                    "hub-bootstrap-key-hint",
+                    hub_bootstrap_hint,
+                    opts=pulumi.ResourceHookOptions(on_dry_run=True),
+                ),
+            ],
+        ),
+    ),
 )
 
 hub_server_ts_cleanup = TailscaleDeviceCleanup(

@@ -20,6 +20,37 @@ What happens during a first deploy (~5 minutes):
    initial base backup and verifies its WAL archive before applications deploy.
 5. MLflow and SkyPilot deployed; SkyPilot admin policy upserted into Postgres
 
+## Hub updates and rebuilds
+
+The hub uses a single-use Tailscale bootstrap key. Once the VM joins, that key is consumed;
+the existing VM does not need it again. `pulumi up --refresh` observes an invalid key and
+renews it without replacing the VM. Ordinary updates do not automatically refresh the key.
+
+The VM ignores changes to the rendered `userData` so key renewal does not rebuild it.
+A hash of the cloud-init template still triggers replacement when the script changes.
+
+Replacing only the VM without observing or replacing an invalid key can cause Tailscale
+bootstrap to fail. The VM creation hook prints a reminder during preview and update,
+including an explicit recovery command with both resource URNs for the current stack.
+The K3s installation error hook adds a similar hint on SSH connection failures while
+preserving the original error and requesting no automatic retries. Neither hint confirms
+that the key is invalid: check the runner's Tailscale connection and VM bootstrap logs too.
+Use Pulumi CLI 3.268.0 or newer for these hooks. Validation used version 3.268.0.
+
+For an intentional rebuild, explicitly replace both resources using their URNs from
+`pulumi stack --show-urns`, or use the command printed by the hook:
+
+```bash
+pulumi preview --refresh --replace '<key-URN>' --replace '<server-URN>'
+pulumi up --refresh --replace '<key-URN>' --replace '<server-URN>'
+```
+
+The normal dependency creates the fresh key before provisioning the new VM. If bootstrap
+has already failed, replacing the key alone does not rerun cloud-init on that VM; replace
+both resources on retry. A stack refresh observes state and an update performs the renewal;
+refresh alone does not create a key. Review all dependent replacements and the normal
+Postgres teardown requirements before rebuilding the hub.
+
 ## Updating Postgres configuration
 
 `pulumi up` updates backup retention on the existing CNPG Cluster without recreating

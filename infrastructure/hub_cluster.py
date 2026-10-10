@@ -6,6 +6,7 @@ import pulumi_command as command
 import pulumi_kubernetes as k8s
 
 from infrastructure.hub_server import hub_server, hub_ssh_private_key
+from resources.hub_bootstrap import hub_connection_error_hint
 from resources.k3s_version import resolve_k3s_version
 
 _config = pulumi.Config()
@@ -36,7 +37,17 @@ hub_cluster_install = command.remote.Command(
         "until kubectl get nodes 2>/dev/null | grep -q ' Ready'; do sleep 2; done"
     ),
     triggers=[k3s_version, hub_server.id],
-    opts=pulumi.ResourceOptions(parent=hub_server),
+    opts=pulumi.ResourceOptions(
+        parent=hub_server,
+        hooks=pulumi.ResourceHookBinding(
+            on_error=[
+                pulumi.ErrorHook(
+                    "hub-bootstrap-connection-hint",
+                    hub_connection_error_hint,
+                ),
+            ],
+        ),
+    ),
 )
 
 # Fetch the kubeconfig and patch 127.0.0.1 → Tailscale IP so it's
