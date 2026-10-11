@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import conftest
 import pytest
-import test_skypilot_admin_policy
 import yaml
+from integration import test_skypilot_admin_policy
 
 from .helpers import expect_equal
 
@@ -88,10 +88,11 @@ class PolicyFixtureTests(unittest.TestCase):
     def test_kubernetes_fixture_closes_after_teardown(self) -> None:
         """Keep the shared client open until dependent fixtures finish."""
         with (
-            patch.object(conftest, "_pulumi_stack_output", return_value="test-config"),
             patch.object(conftest, "kubeconfig_client") as client,
         ):
-            fixture = conftest.k8s_client.__wrapped__()
+            stack = MagicMock()
+            stack.output.return_value = "test-config"
+            fixture = conftest.k8s_client.__wrapped__(stack)
             expect_equal(next(fixture), client.return_value.__enter__.return_value)
             client.return_value.__exit__.assert_not_called()
             with pytest.raises(StopIteration):

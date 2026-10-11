@@ -53,8 +53,8 @@ Uncrossed items remain unresolved.
    deployment modules with explicit inputs while retaining resource names,
    parents, providers, and dependencies. Decide the structure before moving code
    or introducing Pulumi components.
-7. **Live backup test lifecycle.** The backup and recovery fixtures clean up only
-   after reaching `yield`; setup errors can leave the sentinel table, Backup CR,
-   or recovery Cluster behind. They also use unchecked SQL exec and a fixed
-   `postgres-1` primary. Proposed follow-up: checked SQL on the discovered primary,
-   cleanup on setup failure, and a verified wait for recovery pod deletion.
+7. ~~**Live backup test lifecycle.**~~ Backup and recovery fixtures now register
+   cleanup before creation, use checked SQL on the discovered primary, and wait
+   for recovery Cluster and pod deletion. The restore probe includes a write
+   after the chosen base backup to require WAL replay. Setup failures have
+   isolated regression tests. Live validation remains pending a development stack.

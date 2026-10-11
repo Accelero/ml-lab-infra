@@ -20,6 +20,8 @@ dependencies = [
 dev = [
     "mlflow>=3.10.1",
     "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
+    "pytest-timeout>=2.4.0",
     "ruff>=0.9.0",
     "skypilot[runpod]>=0.11.2",
 ]
@@ -27,10 +29,28 @@ dev = [
 [tool.pytest]
 minversion = "9.0"
 addopts = ["-s"]
-testpaths = ["tests"]
-pythonpath = ["tests"]
+testpaths = ["tests/unit", "tests/integration", "tests/e2e"]
+pythonpath = [".", "tests"]
 log_cli = true
 log_cli_level = "INFO"
+markers = [
+    "integration: exercises real dependencies",
+    "docker: requires an isolated local Docker container",
+    "live: requires an explicitly selected development stack",
+    "e2e: exercises deployed applications through their public APIs",
+    "gpu: rents a RunPod GPU with bounded lifetime and verified cleanup",
+    "lifecycle: destroys and recreates the development stack",
+]
+strict_markers = true
+timeout = "120"
+timeout_method = "signal"
+
+[tool.coverage.run]
+branch = true
+source = ["resources", "infrastructure", "scripts"]
+
+[tool.coverage.report]
+show_missing = true
 
 [tool.ruff.lint]
 select = ["ALL"]

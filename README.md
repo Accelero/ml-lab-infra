@@ -86,6 +86,18 @@ and takes no new base backup; missing backup or WAL objects stop teardown. Only 
 continues between teardown and restore. Keep the archive intact to preserve experiment and job
 history, and run periodic restore tests to verify its contents.
 
+## Tests
+
+```bash
+uv run pytest tests/unit -q
+uv run pytest tests/integration --run-docker -q
+```
+
+The integration command runs isolated PostgreSQL and local HTTP tests. Live tests
+require an explicit development stack. Draft e2e tests cover application access,
+a short GPU job with direct RunPod cleanup, and teardown/recovery. See
+[test commands and cleanup limits](doc/operations.md#running-tests) before opting in.
+
 ## Documentation
 
 - [Setup](doc/setup.md): tool installation, Tailscale OAuth client, Hetzner server config, S3 buckets

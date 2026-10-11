@@ -3,14 +3,17 @@
 name: mlflow-integration-test
 
 resources:
-  infra: runpod/ro
+  infra: runpod
+  max_hourly_cost: 0.35
+  disk_size: 20
   any_of:
+    - accelerators: RTX3070:1
+    - accelerators: RTX3080:1
     - accelerators: RTX3090:1
-    - accelerators: RTX4090:1
-    - accelerators: RTX5090:1
     - accelerators: RTXA2000:1
     - accelerators: RTXA4000:1
-    - accelerators: A40:1
+
+num_nodes: 1
 
 envs:
   MLFLOW_TRACKING_URI: ""
@@ -26,9 +29,9 @@ setup: |
   cd "$HOME/mlflow-test"
   curl -fsSL --connect-timeout 15 --max-time 120 https://astral.sh/uv/0.13.0/install.sh \
     | UV_UNMANAGED_INSTALL="$PWD/.bin" timeout 180 sh
-  timeout 600 .bin/uv sync --locked --no-dev
+  timeout 240 .bin/uv sync --locked --no-dev
 
 run: |
   set -euo pipefail
   cd "$HOME/mlflow-test"
-  timeout 600 .bin/uv run --locked --no-dev python mlflow_train.py
+  timeout 120 .bin/uv run --locked --no-dev python mlflow_train.py

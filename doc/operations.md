@@ -195,42 +195,117 @@ To add a new sub-policy:
 
 ## Running tests
 
-Isolated lifecycle and archive tests require no deployed infrastructure:
+Tests use pytest and separate unit, integration, and e2e directories. Plain
+`uv run pytest` runs units and the local HTTP integration tests; Docker, live
+stack, GPU, and destructive lifecycle tests skip before their fixtures execute.
+CI runs units and local integrations, including Docker, without live credentials.
+
+Isolated lifecycle, archive, and cleanup regressions require no deployed infrastructure:
 
 ```bash
 uv run python -m pytest tests/unit -q
 ```
 
-Run the live restore test periodically to verify backup contents, since archive inventory
-checks cannot detect corruption.
-
-Integration tests hit a live deployed stack. They read credentials from Pulumi stack outputs and config at
-runtime, so the stack must be deployed before running tests.
-
-```bash
-uv sync
-uv run pytest tests/ -v
-```
-
-Individual test files:
+Local integrations exercise the production SQL against PostgreSQL 17.9 and the
+RunPod client/watchdog against a local HTTP server. The PostgreSQL container is
+uniquely named, has no published ports or external network, and is removed in a
+finalizer. Docker must be available; its image is downloaded if absent.
 
 ```bash
-uv run pytest tests/test_postgres_backup_restore.py -v
-uv run pytest tests/test_skypilot_admin_policy.py -v
-uv run pytest tests/test_skypilot_mlflow.py -v        # requires RunPod credits
+uv run pytest tests/integration --run-docker -q
+uv run pytest --run-docker --cov --cov-report=term-missing
 ```
 
-What each test covers:
+Local tests cover conditional policy updates, a real competing row lock,
+malformed YAML, database connection gates, checked SQL failure, statement
+timeouts, watchdog lease expiry, late pods, parent-process death, and provider
+deletion failures. Coverage measures production modules, including deployment
+modules that are not exercised by local tests; it is not an e2e coverage score.
 
-- **`test_postgres_backup_restore.py`**: writes a sentinel row, triggers a CNPG `Backup` CR,
-  verifies backup objects exist in S3, spins up a temporary recovery cluster, and confirms the
-  sentinel row survived the backup/restore cycle.
-- **`test_skypilot_admin_policy.py`**: connects to Postgres directly and verifies the
-  `admin_policy` key is set correctly in SkyPilot's `config_yaml` table. Updates and
-  teardown use the provider's conditional policy writer, preserving unrelated settings.
-- **`test_skypilot_mlflow.py`**: submits a SkyPilot managed job to a RunPod GPU node. The job logs
-  hyperparameters, metrics, and a model artifact to MLflow. The test verifies the run appears in
-  MLflow with the expected data.
+### Development-stack prerequisites
+
+Live tests require an already deployed, disposable development stack with its
+own database archive and artifact buckets and an appropriately isolated tailnet.
+They must not share production state or archives. Authenticate Pulumi and connect
+the runner to Tailscale first. Every Pulumi invocation includes `--stack NAME`;
+preflight resolves that stack and requires the local Tailscale client to be
+running. Kubeconfigs and credentials stay in memory.
+
+Supplying `--dev-stack NAME` opts into live integration tests. E2e additionally
+requires `--run-e2e`. GPU and stack destruction each require their own option:
+
+```bash
+uv run pytest tests/integration -m live --dev-stack dev -v
+uv run pytest tests/e2e/test_applications.py --dev-stack dev --run-e2e -v
+uv run pytest tests/e2e/test_skypilot_mlflow.py --dev-stack dev --run-e2e --run-gpu -v
+uv run pytest tests/e2e/test_stack_lifecycle.py --dev-stack dev --run-e2e --run-lifecycle -v
+```
+
+### Live integration and draft e2e coverage
+
+- **`integration/test_postgres_backup_restore.py`** writes unique sentinels before
+  and after a new base backup, verifies its archive and WAL, restores that exact
+  backup into a temporary CNPG cluster, and checks both rows and database identity.
+  Cleanup is registered before setup, uses checked SQL on the current primary,
+  and waits for the recovery Cluster and pods to disappear. Archive objects remain
+  subject to normal retention. Run this periodically: inventory checks alone do
+  not detect backup corruption.
+- **`integration/test_skypilot_admin_policy.py`** verifies the configured policy
+  and conditional database updates while restoring only the original policy field.
+- **`e2e/test_applications.py`** checks the deployed SkyPilot API and a complete
+  MLflow parameter, metric-history, and artifact-content round trip over Tailscale.
+- **`e2e/test_skypilot_mlflow.py`** provisions one cheap RunPod GPU through SkyPilot,
+  checks that CUDA sees exactly one GPU, and writes MLflow parameters, metrics, and
+  an artifact from the worker. It checks the exact invocation's finished run and
+  downloaded bytes, and verifies hardware release directly through RunPod.
+- **`e2e/test_stack_lifecycle.py`** writes application data, previews, destroys,
+  and recreates the development stack. It checks recovered PostgreSQL identity,
+  persisted admin policy, MLflow data/artifacts, fresh writes, and a preview without
+  changes. Failed recreation triggers one bounded restoration attempt. It is
+  destructive and can incur VM costs even without GPU tests.
+
+The new live fixtures and e2e tests are drafts pending validation on a development
+stack. The local suite does not prove deployed chart compatibility, tailnet access,
+RunPod availability, cloud cleanup, or full recovery behavior. Empty-archive first
+deployment, managed-job history recovery, and negative network-policy checks remain
+future e2e additions. MLflow experiment cleanup soft-deletes metadata; artifact
+objects remain in the development bucket, so use a bucket lifecycle for test data.
+
+### GPU budget and cleanup
+
+The job requests one GPU from a small inexpensive candidate list, a 20 GiB disk,
+and `max_hourly_cost: 0.35` (USD/hour). Setup and workload limits are 240 and 120
+seconds. No provisioning retries are requested; SkyPilot idle termination is also
+enabled. See the [SkyPilot resource budget field](https://docs.skypilot.ai/en/latest/reference/yaml-spec.html#resources-max-hourly-cost).
+
+An independent watchdog arms before launch. Its default lease is 600 seconds for
+provisioning plus execution, then up to 180 seconds for cleanup. Lease validation
+rejects longer runtime and rates above $0.50/hour; the test uses $0.35/hour. The
+watchdog checks the provider's reported price and rejects unknown/over-budget
+prices, multiple GPUs or pods, and network volumes. The hourly price is a rate
+limit, not a total invoice cap; provider billing and storage charges still apply.
+
+Each invocation has a unique `mltest-<16 hex characters>` SkyPilot cluster name.
+The watchdog matches only that cluster's head/worker naming pattern and remembers
+observed IDs even if renamed. Cleanup cancels the exact outstanding SkyPilot
+request, requests `sky.down`, and repeatedly calls the RunPod
+[pod deletion API](https://docs.runpod.io/api-reference/pods/DELETE/pods/podId).
+It checks fresh [pod inventories](https://docs.runpod.io/api-reference/pods/GET/pods)
+until owned pods have been absent for 60 seconds, catching late provisioning
+results. An HTTP delete success alone does not pass the test. Unrelated pods are
+left untouched. Credentials reach subprocesses through stdin and are omitted from
+the cleanup journal and command failure output.
+
+The watchdog continues after pytest timeout or parent-process exit. It writes
+`runpod-cleanup.json` in the test's temporary directory with observed pod IDs,
+cleanup status, and a redacted failure reason. An unverified release fails the
+test. No local process can guarantee release during a provider outage or loss of
+the runner host; in that case, use the journal's IDs to terminate the pods through
+RunPod directly and verify their absence. During initial development-stack
+validation, confirm the installed SkyPilot version's pod naming and cancellation
+behavior, and check the RunPod console after both a successful job and a forced
+timeout. A dedicated test RunPod account/key keeps recovery from affecting other
+workloads.
 
 The MLflow test job uses its own uv project in `tests/jobs/`. Setup installs uv
 0.13.0 and syncs the committed `uv.lock` into an isolated environment; `.python-version`

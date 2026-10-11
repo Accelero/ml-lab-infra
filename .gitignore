@@ -6,3 +6,6 @@ venv/
 *.key
 kubeconfig*
 credentials.*
+.coverage
+coverage.xml
+htmlcov/

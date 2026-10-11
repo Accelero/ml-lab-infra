@@ -1,10 +1,12 @@
 # Copyright (c) 2026 David Schmid
-# ruff: noqa: S101, INP001  # assert is idiomatic in pytest
+# ruff: noqa: S101  # assert is idiomatic in pytest
 """Verify policy updates preserve other settings using the production SQL helpers."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+
+import pytest
 
 from resources.postgres_exec import PostgresExec
 from resources.skypilot_config import _change_policy as change_policy
@@ -14,6 +16,7 @@ if TYPE_CHECKING:
     import kubernetes.client
 
 _SENTINEL_POLICY = "test_module.SentinelPolicy"
+pytestmark = [pytest.mark.integration, pytest.mark.live]
 
 
 def test_admin_policy_patch(

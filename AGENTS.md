@@ -40,9 +40,12 @@ jobs to RunPod.
   mounted through a ConfigMap; their checksum triggers a SkyPilot rollout.
   Extend `scripts/skypilot_policies.py` by adding a `sky.AdminPolicy` subclass
   to `SkyPilotAdminPolicy._policies`; `pulumi up` reapplies the policy.
-- `tests/unit/`: isolated archive and lifecycle regression tests.
-- `tests/`: live integration tests and GPU job payloads, with shared fixtures in
-  `tests/conftest.py`.
+- `tests/unit/`: isolated archive, lifecycle, and test-safety regressions.
+- `tests/integration/`: local PostgreSQL/HTTP tests and opt-in live backup/policy tests.
+- `tests/e2e/`: opt-in application, paid GPU, and destructive stack-recovery tests.
+- `tests/support/`: bounded commands, development-stack access, recovery fixtures,
+  and the independent RunPod cleanup watchdog. GPU payloads live in `tests/jobs/`.
+  Shared fixtures and opt-in gating live in `tests/conftest.py`.
 - `doc/`: [architecture](doc/architecture.md), [configuration](doc/configuration.md),
   [setup](doc/setup.md), and [operations](doc/operations.md). Read the relevant
   guide before changing that area; verify behavior against the implementation.
@@ -137,17 +140,24 @@ Run isolated tests for provider changes:
 uv run python -m pytest tests/unit -q
 ```
 
-The integration suite requires a deployed stack, Pulumi credentials/config, and
-Tailscale connectivity. It mutates live databases, creates backups and recovery
-clusters, and can incur GPU charges. Run it only when live testing is authorized:
+Local integration tests use a disposable Docker PostgreSQL container and a local
+HTTP server, without deployed infrastructure or GPU charges:
 
 ```bash
-uv run pytest tests/ -v
+uv run pytest tests/integration --run-docker -q
 ```
 
-Choose relevant files for targeted validation: `test_postgres_backup_restore.py`
-checks backup/recovery, `test_skypilot_admin_policy.py` temporarily modifies the
-SkyPilot config row, and `test_skypilot_mlflow.py` launches a paid RunPod GPU job.
-Ensure cleanup completes and report skipped live checks. A documentation-only
-change does not require live infrastructure tests.
-Use a test file path or `-k '<test_name>'` to select relevant tests.
+Live integration tests require an explicitly selected development stack, Pulumi
+credentials/config, and Tailscale connectivity. They mutate live databases and
+create backups/recovery clusters. Run them only when live testing is authorized:
+
+```bash
+uv run pytest tests/integration -m live --dev-stack dev -v
+```
+
+E2e tests additionally require `--run-e2e`; paid GPU and destructive lifecycle
+tests require `--run-gpu` and `--run-lifecycle`, respectively. See
+`doc/operations.md#running-tests` for targeted commands and cleanup requirements.
+Do not enable live options merely to collect or validate draft tests. Ensure
+cleanup completes and report skipped live checks. A documentation-only change
+does not require live infrastructure tests.

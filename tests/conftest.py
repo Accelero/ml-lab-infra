@@ -1,20 +1,15 @@
 # Copyright (c) 2026 David Schmid
 # ruff: noqa: INP001  # tests/ is not a package
-"""Shared fixtures for all integration tests."""
+"""Gate external operations and share development-stack fixtures."""
 
 from __future__ import annotations
 
-import pathlib
-import shutil
-import subprocess
-import time
-import uuid
 from typing import TYPE_CHECKING
 
-import kubernetes
-import kubernetes.client
 import pytest
-from kubernetes.stream import stream
+from support.backups import BackupProbe, ClusterExec, backup_probe, restored_cluster
+from support.gating import TestOptions
+from support.stack import DevStack, SecretValues
 
 from resources.kubernetes_client import kubeconfig_client
 from resources.postgres_exec import PostgresExec
@@ -24,268 +19,113 @@ from resources.skypilot_config import _read_config as read_skypilot_config
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
-_REPO_ROOT = pathlib.Path(__file__).parent.parent
-_NAMESPACE = "infra"
-_PRIMARY_CLUSTER = "postgres"
-_PRIMARY_POD = "postgres-1"
-_CNPG_GROUP = "postgresql.cnpg.io"
-_CNPG_VERSION = "v1"
-_RESTORE_CLUSTER = "postgres-restore-test"
-_RESTORE_POD = f"{_RESTORE_CLUSTER}-1"
-_BACKUP_CR_NAME = "backup-restore-test"
-_POLL_INTERVAL = 10
-_BACKUP_TIMEOUT = 600
-_RESTORE_TIMEOUT = 600
+    import kubernetes.client
 
 
-def _pulumi_stack_output(key: str) -> str:
-    result = subprocess.run(  # noqa: S603
-        [shutil.which("pulumi") or "pulumi", "stack", "output", key, "--show-secrets"],
-        capture_output=True,
-        text=True,
-        check=True,
-        cwd=_REPO_ROOT,
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Require explicit development-stack and spending opt-ins."""
+    group = parser.getgroup("ml-lab tests")
+    group.addoption("--dev-stack", help="Disposable development stack for live tests")
+    for option in ("docker", "e2e", "gpu", "lifecycle"):
+        group.addoption(f"--run-{option}", action="store_true", default=False)
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config,
+    items: list[pytest.Item],
+) -> None:
+    """Skip external tests before their fixtures run."""
+    options = TestOptions(
+        stack=config.getoption("--dev-stack"),
+        docker=config.getoption("--run-docker"),
+        e2e=config.getoption("--run-e2e"),
+        gpu=config.getoption("--run-gpu"),
+        lifecycle=config.getoption("--run-lifecycle"),
     )
-    return result.stdout.strip()
+    if (options.e2e or options.gpu or options.lifecycle) and not options.stack:
+        msg = "Live e2e options require --dev-stack NAME."
+        raise pytest.UsageError(msg)
+    if (options.gpu or options.lifecycle) and not options.e2e:
+        msg = "GPU and lifecycle tests also require --run-e2e."
+        raise pytest.UsageError(msg)
+    for item in items:
+        reason = options.skip_reason({marker.name for marker in item.iter_markers()})
+        if reason:
+            item.add_marker(pytest.mark.skip(reason=reason))
 
 
 @pytest.fixture(scope="session")
-def pulumi_config() -> Callable[[str], str]:
+def dev_stack(request: pytest.FixtureRequest) -> DevStack:
+    """Verify the explicitly requested stack and the runner's tailnet connection."""
+    name = request.config.getoption("--dev-stack")
+    if not name:
+        pytest.fail("Live tests require --dev-stack NAME.")
+    stack = DevStack(name)
+    stack.preflight()
+    return stack
+
+
+@pytest.fixture(scope="session")
+def pulumi_config(dev_stack: DevStack) -> Callable[[str], str]:
     """Read a Pulumi configuration value."""
-
-    def _get(key: str) -> str:
-        cmd = [shutil.which("pulumi") or "pulumi", "config", "get", key]
-        result = subprocess.run(  # noqa: S603
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=_REPO_ROOT,
-        )
-        return result.stdout.strip()
-
-    return _get
+    return dev_stack.config
 
 
 @pytest.fixture(scope="module")
-def k8s_client() -> Generator[kubernetes.client.ApiClient]:
+def k8s_client(dev_stack: DevStack) -> Generator[kubernetes.client.ApiClient]:
     """Connect using the stack's in-memory kubeconfig."""
-    with kubeconfig_client(_pulumi_stack_output("hub_kubeconfig")) as client:
+    with kubeconfig_client(dev_stack.output("hub_kubeconfig")) as client:
         yield client
 
 
 @pytest.fixture(scope="module")
 def mlflow_s3_config(pulumi_config: Callable[[str], str]) -> dict[str, str]:
     """Fetch MLflow S3 credentials from Pulumi config at test runtime."""
-    return {
-        "endpoint": pulumi_config("mlflow:s3Endpoint"),
-        "access_key": pulumi_config("mlflow:s3AccessKey"),
-        "secret_key": pulumi_config("mlflow:s3SecretKey"),
-    }
+    return SecretValues(
+        {
+            "endpoint": pulumi_config("mlflow:s3Endpoint"),
+            "access_key": pulumi_config("mlflow:s3AccessKey"),
+            "secret_key": pulumi_config("mlflow:s3SecretKey"),
+        },
+    )
 
 
 @pytest.fixture(scope="module")
 def backup_s3_config(pulumi_config: Callable[[str], str]) -> dict[str, str]:
     """Fetch S3 credentials from Pulumi config at test runtime, not collection time."""
-    return {
-        "endpoint": pulumi_config("backup:s3Endpoint"),
-        "bucket": pulumi_config("backup:s3BucketName"),
-        "access_key": pulumi_config("backup:s3AccessKey"),
-        "secret_key": pulumi_config("backup:s3SecretKey"),
-    }
+    return SecretValues(
+        {
+            "endpoint": pulumi_config("backup:s3Endpoint"),
+            "bucket": pulumi_config("backup:s3BucketName"),
+            "access_key": pulumi_config("backup:s3AccessKey"),
+            "secret_key": pulumi_config("backup:s3SecretKey"),
+        },
+    )
 
 
 @pytest.fixture(scope="module")
 def sentinel_and_backup(
     k8s_client: kubernetes.client.ApiClient,
-) -> Generator[tuple[str, str]]:
-    """Yield a completed backup and sentinel UUID; remove both on teardown."""
-    core_api = kubernetes.client.CoreV1Api(k8s_client)
-    custom_api = kubernetes.client.CustomObjectsApi(k8s_client)
-
-    sentinel_uuid = str(uuid.uuid4())
-
-    create_sentinel = "CREATE TABLE IF NOT EXISTS backup_restore_sentinel (val TEXT);"
-    insert_sentinel = f"INSERT INTO backup_restore_sentinel VALUES ('{sentinel_uuid}');"  # noqa: S608
-    stream(
-        core_api.connect_get_namespaced_pod_exec,
-        _PRIMARY_POD,
-        _NAMESPACE,
-        command=[
-            "psql",
-            "-U",
-            "postgres",
-            "-d",
-            "mlflow_db",
-            "-c",
-            create_sentinel + insert_sentinel,
-        ],
-        stderr=True,
-        stdin=False,
-        stdout=True,
-        tty=False,
-    )
-
-    backup_manifest = {
-        "apiVersion": f"{_CNPG_GROUP}/{_CNPG_VERSION}",
-        "kind": "Backup",
-        "metadata": {"name": _BACKUP_CR_NAME, "namespace": _NAMESPACE},
-        "spec": {
-            "method": "barmanObjectStore",
-            "cluster": {"name": _PRIMARY_CLUSTER},
-        },
-    }
-    custom_api.create_namespaced_custom_object(
-        _CNPG_GROUP,
-        _CNPG_VERSION,
-        _NAMESPACE,
-        "backups",
-        backup_manifest,
-    )
-
-    deadline = time.monotonic() + _BACKUP_TIMEOUT
-    completed = False
-    while time.monotonic() < deadline:
-        time.sleep(_POLL_INTERVAL)
-        obj = custom_api.get_namespaced_custom_object(
-            _CNPG_GROUP,
-            _CNPG_VERSION,
-            _NAMESPACE,
-            "backups",
-            _BACKUP_CR_NAME,
-        )
-        phase = obj.get("status", {}).get("phase")
-        if phase == "completed":
-            completed = True
-            break
-        if phase == "failed":
-            msg = f"Backup CR entered failed phase: {obj.get('status', {})}"
-            raise RuntimeError(msg)
-
-    assert completed, f"Backup did not complete within {_BACKUP_TIMEOUT}s"  # noqa: S101
-
-    yield _BACKUP_CR_NAME, sentinel_uuid
-
-    stream(
-        core_api.connect_get_namespaced_pod_exec,
-        _PRIMARY_POD,
-        _NAMESPACE,
-        command=[
-            "psql",
-            "-U",
-            "postgres",
-            "-d",
-            "mlflow_db",
-            "-c",
-            "DROP TABLE IF EXISTS backup_restore_sentinel;",
-        ],
-        stderr=True,
-        stdin=False,
-        stdout=True,
-        tty=False,
-    )
-    try:
-        custom_api.delete_namespaced_custom_object(
-            _CNPG_GROUP,
-            _CNPG_VERSION,
-            _NAMESPACE,
-            "backups",
-            _BACKUP_CR_NAME,
-        )
-    except kubernetes.client.exceptions.ApiException as exc:
-        if exc.status != 404:  # noqa: PLR2004
-            raise
+    backup_s3_config: dict[str, str],
+) -> Generator[BackupProbe]:
+    """Verify the base backup and post-backup WAL before yielding."""
+    with backup_probe(k8s_client, backup_s3_config) as probe:
+        yield probe
 
 
 @pytest.fixture(scope="module")
 def recovery_cluster(
     k8s_client: kubernetes.client.ApiClient,
     backup_s3_config: dict[str, str],
-    sentinel_and_backup: tuple[str, str],  # noqa: ARG001  # ordering dependency
-) -> Generator[str]:
-    """Create postgres-restore-test recovery cluster, yield pod name, teardown."""
-    custom_api = kubernetes.client.CustomObjectsApi(k8s_client)
-    core_api = kubernetes.client.CoreV1Api(k8s_client)
-
-    cluster_manifest = {
-        "apiVersion": f"{_CNPG_GROUP}/{_CNPG_VERSION}",
-        "kind": "Cluster",
-        "metadata": {"name": _RESTORE_CLUSTER, "namespace": _NAMESPACE},
-        "spec": {
-            "instances": 1,
-            "bootstrap": {"recovery": {"source": "backup-source"}},
-            "storage": {"size": "10Gi"},
-            "externalClusters": [
-                {
-                    "name": "backup-source",
-                    "barmanObjectStore": {
-                        "destinationPath": f"s3://{backup_s3_config['bucket']}",
-                        "endpointURL": backup_s3_config["endpoint"],
-                        "serverName": _PRIMARY_CLUSTER,
-                        "s3Credentials": {
-                            "accessKeyId": {
-                                "name": "postgres-backup-credentials",
-                                "key": "ACCESS_KEY_ID",
-                            },
-                            "secretAccessKey": {
-                                "name": "postgres-backup-credentials",
-                                "key": "ACCESS_SECRET_KEY",
-                            },
-                        },
-                    },
-                },
-            ],
-        },
-    }
-
-    custom_api.create_namespaced_custom_object(
-        _CNPG_GROUP,
-        _CNPG_VERSION,
-        _NAMESPACE,
-        "clusters",
-        cluster_manifest,
-    )
-
-    deadline = time.monotonic() + _RESTORE_TIMEOUT
-    ready = False
-    while time.monotonic() < deadline:
-        time.sleep(_POLL_INTERVAL)
-        obj = custom_api.get_namespaced_custom_object(
-            _CNPG_GROUP,
-            _CNPG_VERSION,
-            _NAMESPACE,
-            "clusters",
-            _RESTORE_CLUSTER,
-        )
-        if obj.get("status", {}).get("readyInstances", 0) > 0:
-            ready = True
-            break
-
-    assert ready, f"Recovery cluster not ready within {_RESTORE_TIMEOUT}s"  # noqa: S101
-
-    yield _RESTORE_POD
-
-    try:
-        custom_api.delete_namespaced_custom_object(
-            _CNPG_GROUP,
-            _CNPG_VERSION,
-            _NAMESPACE,
-            "clusters",
-            _RESTORE_CLUSTER,
-        )
-    except kubernetes.client.exceptions.ApiException as exc:
-        if exc.status != 404:  # noqa: PLR2004
-            raise
-
-    deadline = time.monotonic() + _RESTORE_TIMEOUT
-    while time.monotonic() < deadline:
-        time.sleep(_POLL_INTERVAL)
-        pods = core_api.list_namespaced_pod(
-            _NAMESPACE,
-            label_selector=f"cnpg.io/cluster={_RESTORE_CLUSTER}",
-        )
-        if not pods.items:
-            break
+    sentinel_and_backup: BackupProbe,
+) -> Generator[ClusterExec]:
+    """Recover the exact test backup and release resources even on setup failure."""
+    with restored_cluster(
+        k8s_client,
+        backup_s3_config,
+        sentinel_and_backup,
+    ) as executor:
+        yield executor
 
 
 @pytest.fixture(scope="module")
