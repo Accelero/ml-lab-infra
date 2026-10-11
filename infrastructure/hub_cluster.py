@@ -22,7 +22,6 @@ _conn = command.remote.ConnectionArgs(
     per_dial_timeout=5,
 )
 
-# Install k3s bound to the Tailscale interface.
 hub_cluster_install = command.remote.Command(
     "hub-cluster-install",
     connection=_conn,
@@ -50,8 +49,6 @@ hub_cluster_install = command.remote.Command(
     ),
 )
 
-# Fetch the kubeconfig and patch 127.0.0.1 → Tailscale IP so it's
-# reachable from outside the server.
 hub_kubeconfig_cmd = command.remote.Command(
     "hub-kubeconfig",
     connection=_conn,
@@ -59,7 +56,7 @@ hub_kubeconfig_cmd = command.remote.Command(
         "TS_IP=$(tailscale ip -4) && "
         'sed "s/127.0.0.1/$TS_IP/g" /etc/rancher/k3s/k3s.yaml'
     ),
-    logging=command.remote.Logging.NONE,  # Don't log the kubeconfig in terminal output
+    logging=command.remote.Logging.NONE,
     triggers=[hub_cluster_install.id],
     opts=pulumi.ResourceOptions(
         parent=hub_cluster_install,

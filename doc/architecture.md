@@ -41,6 +41,12 @@ SkyPilot dispatches jobs to:
 
 The stack is built in four sequential layers. Each layer depends on the previous.
 
+`__main__.py` imports the deployment definitions in `infrastructure/`, which register
+Pulumi resources at import time. `resources/` contains dynamic providers and their
+helpers. Postgres archive validation, configuration, lifecycle, and SQL execution have
+separate modules. `resources/kubernetes_client.py` loads kubeconfigs in memory for
+the providers and integration fixtures.
+
 ### Layer 1: Hub server (`infrastructure/hub_server.py`)
 
 Creates the Hetzner VM and establishes its identity.

@@ -1,5 +1,5 @@
 # Copyright (c) 2026 David Schmid
-"""ML Lab Infrastructure Pulumi Program."""
+"""Register the ML lab infrastructure."""
 
 import infrastructure.apps
 import infrastructure.hub_cluster

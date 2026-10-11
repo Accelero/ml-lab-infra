@@ -1,9 +1,4 @@
-# SkyPilot integration-test task.
-#
-# Tailscale is injected automatically by the server-side admin policy.
-# No Tailscale auth key or Tailscale setup steps are needed here.
-#
-# Required env vars (pass via `sky launch --env KEY=VALUE` or the pytest fixture)
+# Tailscale setup is injected by the server-side policy.
 
 name: mlflow-integration-test
 

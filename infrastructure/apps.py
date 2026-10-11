@@ -66,8 +66,6 @@ mlflow_s3_bucket = _mlflow_config.require("s3BucketName")
 mlflow_s3_access_key = _mlflow_config.require_secret("s3AccessKey")
 mlflow_s3_secret_key = _mlflow_config.require_secret("s3SecretKey")
 
-# ── Namespaces ────────────────────────────────────────────────────────────────────────
-
 ns_tailscale = k8s.core.v1.Namespace(
     "ns-tailscale",
     metadata=k8s.meta.v1.ObjectMetaArgs(name="tailscale"),
@@ -96,10 +94,6 @@ ns_app = k8s.core.v1.Namespace(
     opts=pulumi.ResourceOptions(parent=hub_kubeconfig_cmd, provider=hub_k8s_provider),
 )
 
-# ── Network Policies ─────────────────────────────────────────────────────────────────
-
-# Default deny all ingress in infra namespace. Explicit allow rules below open
-# only the ports that are actually needed.
 _netpol_opts_infra = pulumi.ResourceOptions(parent=ns_infra, provider=hub_k8s_provider)
 
 k8s.networking.v1.NetworkPolicy(
@@ -115,7 +109,6 @@ k8s.networking.v1.NetworkPolicy(
     opts=_netpol_opts_infra,
 )
 
-# Allow app namespace pods (MLflow, SkyPilot) to reach Postgres on port 5432.
 k8s.networking.v1.NetworkPolicy(
     "netpol-infra-allow-postgres-from-app",
     metadata=k8s.meta.v1.ObjectMetaArgs(
@@ -150,7 +143,6 @@ k8s.networking.v1.NetworkPolicy(
     opts=_netpol_opts_infra,
 )
 
-# Allow the CNPG operator (cnpg-system namespace) to manage Postgres pods.
 k8s.networking.v1.NetworkPolicy(
     "netpol-infra-allow-postgres-from-cnpg",
     metadata=k8s.meta.v1.ObjectMetaArgs(
@@ -179,7 +171,6 @@ k8s.networking.v1.NetworkPolicy(
     opts=_netpol_opts_infra,
 )
 
-# Default deny all ingress in app namespace.
 _netpol_opts_app = pulumi.ResourceOptions(parent=ns_app, provider=hub_k8s_provider)
 
 k8s.networking.v1.NetworkPolicy(
@@ -195,7 +186,6 @@ k8s.networking.v1.NetworkPolicy(
     opts=_netpol_opts_app,
 )
 
-# Allow Tailscale ingress proxies (tailscale namespace) to reach app pods.
 k8s.networking.v1.NetworkPolicy(
     "netpol-app-allow-from-tailscale",
     metadata=k8s.meta.v1.ObjectMetaArgs(
@@ -221,8 +211,6 @@ k8s.networking.v1.NetworkPolicy(
     ),
     opts=_netpol_opts_app,
 )
-
-# ── Tailscale operator ────────────────────────────────────────────────────────────────
 
 tailscale_operator_secret = k8s.core.v1.Secret(
     "tailscale-operator-secret",
@@ -270,8 +258,6 @@ tailscale_operator_ts_cleanup = TailscaleDeviceCleanup(
     ),
 )
 
-# ── CNPG operator ─────────────────────────────────────────────────────────────────────
-
 ns_cnpg = k8s.core.v1.Namespace(
     "ns-cnpg",
     metadata=k8s.meta.v1.ObjectMetaArgs(name="cnpg-system"),
@@ -291,8 +277,6 @@ cnpg_operator = k8s.helm.v3.Release(
         provider=hub_k8s_provider,
     ),
 )
-
-# ── Postgres (CloudNativePG) ──────────────────────────────────────────────────────────
 
 mlflow_role_secret = k8s.core.v1.Secret(
     "mlflow-role-secret",
@@ -375,8 +359,6 @@ postgres_scheduled_backup = k8s.apiextensions.CustomResource(
     ),
 )
 
-# ── MLflow ────────────────────────────────────────────────────────────────────────────
-
 mlflow_s3_secret = k8s.core.v1.Secret(
     "mlflow-s3-secret",
     metadata=k8s.meta.v1.ObjectMetaArgs(name="mlflow-s3-secret", namespace="app"),
@@ -387,7 +369,7 @@ mlflow_s3_secret = k8s.core.v1.Secret(
     opts=pulumi.ResourceOptions(parent=ns_app, provider=hub_k8s_provider),
 )
 
-mlflow_role_secret = k8s.core.v1.Secret(
+mlflow_postgres_secret = k8s.core.v1.Secret(
     "mlflow-postgres-secret",
     metadata=k8s.meta.v1.ObjectMetaArgs(name="mlflow-db-secret", namespace="app"),
     string_data={
@@ -415,7 +397,7 @@ mlflow = k8s.helm.v3.Release(
                 "database": MLFLOW_DB,
             },
             "existingDatabaseSecret": {
-                "name": mlflow_role_secret.metadata["name"],
+                "name": mlflow_postgres_secret.metadata["name"],
                 "usernameKey": "username",
                 "passwordKey": "password",
             },
@@ -436,7 +418,7 @@ mlflow = k8s.helm.v3.Release(
         },
         "log": {
             "enabled": False,
-        },  # must be disabled to use uvicorn and allow usage of extraArgs allowedHosts
+        },  # Uvicorn is required for allowedHosts.
         "podSecurityContext": {
             "fsGroup": 1001,
             "fsGroupChangePolicy": "OnRootMismatch",
@@ -471,9 +453,7 @@ mlflow = k8s.helm.v3.Release(
     ),
 )
 
-# ── SkyPilot API ──────────────────────────────────────────────────────────────────────
-
-skypilot_role_secret = k8s.core.v1.Secret(
+skypilot_postgres_secret = k8s.core.v1.Secret(
     "skypilot-postgres-secret",
     metadata=k8s.meta.v1.ObjectMetaArgs(
         name="skypilot-postgres-secret",
@@ -497,8 +477,6 @@ skypilot_runpod_secret = k8s.core.v1.Secret(
     opts=pulumi.ResourceOptions(parent=ns_app, provider=hub_k8s_provider),
 )
 
-# Tailscale OAuth client for the admin policy. The policy calls the
-# Tailscale API at job-submission time to generate a fresh one-time auth key.
 skypilot_tailscale_secret = k8s.core.v1.Secret(
     "skypilot-tailscale-secret",
     metadata=k8s.meta.v1.ObjectMetaArgs(
@@ -512,8 +490,11 @@ skypilot_tailscale_secret = k8s.core.v1.Secret(
     opts=pulumi.ResourceOptions(parent=ns_app, provider=hub_k8s_provider),
 )
 
-# Admin policy as ConfigMap so the policy is a real file in the cluster and
-# mounted read-only into the SkyPilot API server at /sky-policies/.
+_skypilot_policy_files = {
+    "skypilot_policies.py": Path("scripts/skypilot_policies.py").read_text(),
+    "tailscale_setup.sh": Path("scripts/tailscale_setup.sh").read_text(),
+}
+
 skypilot_policy_configmap = k8s.core.v1.ConfigMap(
     "skypilot-policies-configmap",
     metadata=k8s.meta.v1.ObjectMetaArgs(
@@ -521,10 +502,7 @@ skypilot_policy_configmap = k8s.core.v1.ConfigMap(
         namespace="app",
         annotations={"pulumi.com/patchForce": "true"},
     ),
-    data={
-        "skypilot_policies.py": Path("scripts/skypilot_policies.py").read_text(),
-        "tailscale_setup.sh": Path("scripts/tailscale_setup.sh").read_text(),
-    },
+    data=_skypilot_policy_files,
     opts=pulumi.ResourceOptions(parent=ns_app, provider=hub_k8s_provider),
 )
 
@@ -540,7 +518,7 @@ skypilot = k8s.helm.v3.Release(
     values={
         "apiService": {
             "skipResourceCheck": True,
-            "dbConnectionSecretName": skypilot_role_secret.metadata["name"],
+            "dbConnectionSecretName": skypilot_postgres_secret.metadata["name"],
             "podSecurityContext": {
                 "runAsUser": 1000,
                 "runAsGroup": 1000,
@@ -553,12 +531,9 @@ skypilot = k8s.helm.v3.Release(
             },
             "podAnnotations": {
                 "checksum/skypilot-policies": hashlib.sha256(
-                    (
-                        Path("scripts/skypilot_policies.py").read_text()
-                        + Path("scripts/tailscale_setup.sh").read_text()
-                    ).encode(),
+                    "".join(_skypilot_policy_files.values()).encode(),
                 ).hexdigest(),
-            },  # trigger update of the API server whenever the policy ConfigMap changes
+            },
             "extraEnvs": [
                 {
                     "name": "TAILSCALE_OAUTH_CLIENT_ID",
@@ -627,7 +602,6 @@ skypilot = k8s.helm.v3.Release(
             tailscale_operator,
         ],
         replace_with=[
-            # skypilot_policy_configmap,
             skypilot_runpod_secret,
             skypilot_tailscale_secret,
         ],

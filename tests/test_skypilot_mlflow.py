@@ -1,17 +1,6 @@
 # Copyright (c) 2026 David Schmid
 # ruff: noqa: S101, INP001  # assert is idiomatic in pytest
-"""SkyPilot MLflow integration test: managed job → MLflow tracking → S3 artifact.
-
-Submits a SkyPilot managed job to the remote API server.  The job:
-  1. Provisions a RunPod GPU VM.
-  2. Tailscale is auto-injected by the server-side admin policy so the VM
-     can reach MLflow without any manual key management.
-  3. Runs a dummy training loop that logs params/metrics and uploads a model
-     artifact via the MLflow tracking server.
-  4. Terminates automatically on completion, avoiding lingering RunPod costs.
-
-URLs are derived from ``pulumi config get tailscale:tailnet``.
-"""
+"""Verify a RunPod job logs metrics and an S3 artifact through MLflow."""
 
 from __future__ import annotations
 
@@ -19,9 +8,13 @@ import os
 import pathlib
 import shutil
 import subprocess
+from typing import TYPE_CHECKING
 
 import pytest
 from mlflow.tracking import MlflowClient
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 EXPERIMENT_NAME = "skypilot-integration-test"
 JOB_NAME = "skypilot-integration-test"
@@ -31,7 +24,7 @@ _SKY = shutil.which("sky") or "sky"
 
 def test_skypilot_mlflow_integration(
     monkeypatch: pytest.MonkeyPatch,
-    pulumi_config: object,
+    pulumi_config: Callable[[str], str],
     mlflow_s3_config: dict[str, str],
 ) -> None:
     """Managed job runs, logs metrics/params, and uploads artifact to S3."""

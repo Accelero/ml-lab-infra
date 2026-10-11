@@ -1,5 +1,5 @@
 # Copyright (c) 2026 David Schmid
-"""Custom Pulumi resource to cleanup Tailscale nodes."""
+"""Deregister Tailscale devices during Pulumi teardown."""
 
 import base64
 import json
@@ -8,6 +8,8 @@ import urllib.request
 import pulumi
 from pulumi import Input, ResourceOptions, log
 from pulumi.dynamic import CreateResult, Resource, ResourceProvider
+
+_REQUEST_TIMEOUT = 10
 
 
 class _TailscaleDeviceCleanupProvider(ResourceProvider):
@@ -21,49 +23,54 @@ class _TailscaleDeviceCleanupProvider(ResourceProvider):
         tailnet = props["tailnet"]
         log.info(f"Cleaning up Tailscale node '{hostname}'...")
         try:
-            # 1. OAuth token
-            b64 = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+            credentials = base64.b64encode(
+                f"{client_id}:{client_secret}".encode(),
+            ).decode()
             with urllib.request.urlopen(
                 urllib.request.Request(
                     "https://api.tailscale.com/api/v2/oauth/token",
                     data=b"grant_type=client_credentials",
                     headers={
-                        "Authorization": f"Basic {b64}",
+                        "Authorization": f"Basic {credentials}",
                         "Content-Type": "application/x-www-form-urlencoded",
                     },
                 ),
-            ) as r:
-                token = json.load(r)["access_token"]
+                timeout=_REQUEST_TIMEOUT,
+            ) as response:
+                token = json.load(response)["access_token"]
 
-            # 2. List devices
             with urllib.request.urlopen(
                 urllib.request.Request(
                     f"https://api.tailscale.com/api/v2/tailnet/{tailnet}/devices",
                     headers={"Authorization": f"Bearer {token}"},
                 ),
-            ) as r:
-                devices = json.load(r).get("devices", [])
+                timeout=_REQUEST_TIMEOUT,
+            ) as response:
+                devices = json.load(response).get("devices", [])
 
-            # 3. Delete matching node
-            for d in devices:
-                if d.get("name", "").split(".")[0] == hostname:
-                    urllib.request.urlopen(
+            for device in devices:
+                if device.get("name", "").split(".")[0] == hostname:
+                    with urllib.request.urlopen(
                         urllib.request.Request(
-                            f"https://api.tailscale.com/api/v2/device/{d['id']}",
+                            f"https://api.tailscale.com/api/v2/device/{device['id']}",
                             method="DELETE",
                             headers={"Authorization": f"Bearer {token}"},
                         ),
-                    )
+                        timeout=_REQUEST_TIMEOUT,
+                    ):
+                        pass
                     log.info(f"Tailscale node '{hostname}' removed.")
                     break
             else:
                 log.info(f"Tailscale node '{hostname}' not found in tailnet, skipping.")
-        except (OSError, ValueError, KeyError) as e:
-            log.warn(f"Tailscale cleanup warning: {e}")
+        except (OSError, ValueError, KeyError) as exc:
+            log.warn(
+                f"Tailscale cleanup failed for '{hostname}' ({type(exc).__name__}).",
+            )
 
 
 class TailscaleDeviceCleanup(Resource):
-    """Pulumi resource that deletes a Tailscale device on deletion."""
+    """Remove a device from the tailnet when the resource is deleted."""
 
     def __init__(
         self,
@@ -71,15 +78,7 @@ class TailscaleDeviceCleanup(Resource):
         hostname: Input[str],
         opts: ResourceOptions | None = None,
     ) -> None:
-        """Initialize a TailscaleDeviceCleanup resource.
-
-        Args:
-            name (str): The name of the Pulumi resource.
-            hostname (Input[str]): The Tailscale device hostname to cleanup.
-            opts (ResourceOptions | None, optional): Pulumi resource options. \
-            Defaults to None.
-
-        """
+        """Register cleanup for the given hostname."""
         ts_config = pulumi.Config("tailscale")
         super().__init__(
             _TailscaleDeviceCleanupProvider(),

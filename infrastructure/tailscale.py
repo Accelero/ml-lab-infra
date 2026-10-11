@@ -1,12 +1,10 @@
 # Copyright (c) 2026 David Schmid
-"""Tailscale Configuration."""
+"""Configure tailnet grants and workload OAuth clients."""
 
 import json
 
 import pulumi_tailscale as tailscale
 
-# Dedicated OAuth client for the Tailscale Kubernetes operator.
-# Needs auth_keys scope (to provision devices) and the k8s-operator tag.
 operator_oauth_client = tailscale.OauthClient(
     "tailscale-operator-oauth-client",
     description="k8s operator",
@@ -14,8 +12,6 @@ operator_oauth_client = tailscale.OauthClient(
     tags=["tag:k8s-operator"],
 )
 
-# OAuth client for the SkyPilot API server.
-# Needs auth_keys scope (to provision devices) and the skypilot-server tag.
 skypilot_ts_oauth_client = tailscale.OauthClient(
     "skypilot-ts-oauth-client",
     description="SkyPilot API server",

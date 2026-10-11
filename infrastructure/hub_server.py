@@ -1,5 +1,5 @@
 # Copyright (c) 2026 David Schmid
-"""The hub server setup."""
+"""Provision the hub VM and Tailscale bootstrap key."""
 
 import hashlib
 from pathlib import Path
@@ -12,11 +12,10 @@ import pulumi_tls as tls
 from resources import TailscaleDeviceCleanup
 from resources.hub_bootstrap import hub_bootstrap_hint
 
-_hcloud_config = pulumi.Config("hub_server")
-_server_type = _hcloud_config.get("serverType") or "cx33"
-_location = _hcloud_config.get("location") or "fsn1"
+_hub_config = pulumi.Config("hub_server")
+_server_type = _hub_config.get("serverType") or "cx33"
+_location = _hub_config.get("location") or "fsn1"
 
-# Generate an SSH key pair for the hub server
 hub_ssh_key = tls.PrivateKey(
     "hub-ssh-key",
     algorithm="ED25519",
@@ -34,23 +33,20 @@ hub_hcloud_ssh_key = hcloud.SshKey(
 pulumi.export("hub_ssh_private_key", hub_ssh_private_key)
 pulumi.export("hub_ssh_public_key", hub_ssh_public_key)
 
-# Generate a Tailscale auth key for the hub server
 hub_ts_auth_key = tailscale.TailnetKey(
     "hub-ts-auth-key",
     reusable=False,
     ephemeral=False,
     preauthorized=True,
-    expiry=3600,  # in seconds
+    expiry=3600,
     tags=["tag:hub-server"],
     description="Provisioning key for hub server",
     recreate_if_invalid="always",
 )
 
-# Create Firewall for the hub server
 hub_firewall = hcloud.Firewall(
     "hub-firewall",
     name="hub-firewall",
-    # Allow Tailscale UDP for peer communication
     rules=[
         {
             "direction": "in",
@@ -61,9 +57,7 @@ hub_firewall = hcloud.Firewall(
     ],
 )
 
-# Create the hub server
-with Path("scripts/cloud-init.sh").open("r") as f:
-    script_body = f.read()
+script_body = Path("scripts/cloud-init.sh").read_text()
 
 user_data = hub_ts_auth_key.key.apply(
     lambda key: script_body.replace("${TAILSCALE_AUTH_KEY}", key),

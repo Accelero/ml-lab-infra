@@ -4,12 +4,11 @@
 import json
 import time
 
-import kubernetes.client
-import kubernetes.config
 import yaml
 from pulumi import Input, ResourceOptions, log
 from pulumi.dynamic import CreateResult, Resource, ResourceProvider, UpdateResult
 
+from resources.kubernetes_client import kubeconfig_client as _api_client
 from resources.postgres_exec import PostgresExec
 
 _DB = "skypilot_db"
@@ -37,15 +36,6 @@ _INSERT_CONFIG = (
     "VALUES (:'config_key', :'config_value') "
     "ON CONFLICT (key) DO NOTHING RETURNING 1;"
 )
-
-
-def _api_client(kubeconfig: str) -> kubernetes.client.ApiClient:
-    cfg = kubernetes.client.Configuration()
-    kubernetes.config.load_kube_config_from_dict(
-        yaml.safe_load(kubeconfig),
-        client_configuration=cfg,
-    )
-    return kubernetes.client.ApiClient(configuration=cfg)
 
 
 def _table_exists(executor: PostgresExec, timeout: float = _QUERY_TIMEOUT) -> bool:

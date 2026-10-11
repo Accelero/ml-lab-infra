@@ -1,27 +1,18 @@
 # Copyright (c) 2026 David Schmid
-"""SkyPilot admin policy: composite policy that chains sub-policies in order.
-
-Each sub-policy is a ``sky.AdminPolicy`` subclass implementing
-``validate_and_mutate``. ``SkyPilotAdminPolicy`` is the sole entry point
-registered with SkyPilot; it threads the request through each sub-policy in
-order, passing each policy's ``MutatedUserRequest`` as input to the next.
-
-To add a new sub-policy: subclass ``sky.AdminPolicy``, implement
-``validate_and_mutate``, and append the class to
-``SkyPilotAdminPolicy._policies``.
-"""
+"""Inject Tailscale access through the registered SkyPilot admin policies."""
 
 import json
 import os
 import pathlib
 import urllib.parse
+from contextlib import closing
+from http import HTTPStatus
 from http.client import HTTPSConnection
 
 import sky
 
-_TAILNET = os.environ["TAILSCALE_TAILNET"]
-
 _TAILSCALE_SETUP = (pathlib.Path(__file__).parent / "tailscale_setup.sh").read_text()
+_REQUEST_TIMEOUT = 10
 
 
 def _get_oauth_token(client_id: str, client_secret: str) -> str:
@@ -33,19 +24,25 @@ def _get_oauth_token(client_id: str, client_secret: str) -> str:
             "client_secret": client_secret,
         },
     ).encode()
-    conn = HTTPSConnection("api.tailscale.com", timeout=10)
-    conn.request(
-        "POST",
-        "/api/v2/oauth/token",
-        body=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
-    resp = conn.getresponse()
-    data = json.loads(resp.read())
-    if "access_token" not in data:
-        msg = f"Tailscale OAuth token exchange failed (HTTP {resp.status}): {data}"
+    with closing(
+        HTTPSConnection("api.tailscale.com", timeout=_REQUEST_TIMEOUT),
+    ) as connection:
+        connection.request(
+            "POST",
+            "/api/v2/oauth/token",
+            body=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        with closing(connection.getresponse()) as response:
+            if not HTTPStatus.OK <= response.status < HTTPStatus.MULTIPLE_CHOICES:
+                msg = f"Tailscale OAuth token exchange failed (HTTP {response.status})."
+                raise RuntimeError(msg)
+            data = json.loads(response.read())
+    token = data.get("access_token") if isinstance(data, dict) else None
+    if not isinstance(token, str) or not token:
+        msg = "Tailscale OAuth response has no access token."
         raise RuntimeError(msg)
-    return data["access_token"]
+    return token
 
 
 def _create_auth_key(bearer_token: str, tailnet: str) -> str:
@@ -65,22 +62,28 @@ def _create_auth_key(bearer_token: str, tailnet: str) -> str:
             "expirySeconds": 300,
         },
     ).encode()
-    conn = HTTPSConnection("api.tailscale.com", timeout=10)
-    conn.request(
-        "POST",
-        f"/api/v2/tailnet/{tailnet}/keys",
-        body=payload,
-        headers={
-            "Authorization": f"Bearer {bearer_token}",
-            "Content-Type": "application/json",
-        },
-    )
-    resp = conn.getresponse()
-    data = json.loads(resp.read())
-    if "key" not in data:
-        msg = f"Tailscale auth key creation failed (HTTP {resp.status}): {data}"
+    with closing(
+        HTTPSConnection("api.tailscale.com", timeout=_REQUEST_TIMEOUT),
+    ) as connection:
+        connection.request(
+            "POST",
+            f"/api/v2/tailnet/{tailnet}/keys",
+            body=payload,
+            headers={
+                "Authorization": f"Bearer {bearer_token}",
+                "Content-Type": "application/json",
+            },
+        )
+        with closing(connection.getresponse()) as response:
+            if not HTTPStatus.OK <= response.status < HTTPStatus.MULTIPLE_CHOICES:
+                msg = f"Tailscale auth key creation failed (HTTP {response.status})."
+                raise RuntimeError(msg)
+            data = json.loads(response.read())
+    key = data.get("key") if isinstance(data, dict) else None
+    if not isinstance(key, str) or not key:
+        msg = "Tailscale key response has no auth key."
         raise RuntimeError(msg)
-    return data["key"]
+    return key
 
 
 class _TailscalePolicy(sky.AdminPolicy):
@@ -101,7 +104,7 @@ class _TailscalePolicy(sky.AdminPolicy):
             raise RuntimeError(msg)
 
         bearer = _get_oauth_token(client_id, client_secret)
-        auth_key = _create_auth_key(bearer, _TAILNET)
+        auth_key = _create_auth_key(bearer, os.environ["TAILSCALE_TAILNET"])
 
         task = user_request.task
         task.update_envs({"TAILSCALE_AUTH_KEY": auth_key})
@@ -115,9 +118,9 @@ class _TailscalePolicy(sky.AdminPolicy):
 
 
 class SkyPilotAdminPolicy(sky.AdminPolicy):
-    """Composite admin policy: chains each registered sub-policy in order."""
+    """Apply the registered admin policies in order."""
 
-    _policies: tuple = (_TailscalePolicy,)
+    _policies: tuple[type[sky.AdminPolicy], ...] = (_TailscalePolicy,)
 
     @classmethod
     def validate_and_mutate(

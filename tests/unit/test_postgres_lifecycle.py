@@ -239,6 +239,7 @@ class ProviderGateTests(unittest.TestCase):
             "_delete_if_exists": MagicMock(),
         }
         self.enterContext(patch.multiple(postgres_cluster, **patches))
+        self.api_client = patches["_api_client"]
         self.delete = patches["_delete_if_exists"]
         archive_patch = patch.object(
             postgres_cluster.PostgresArchive,
@@ -372,3 +373,22 @@ class ProviderGateTests(unittest.TestCase):
                 clock.monotonic.side_effect = [0, 1000]
                 with pytest.raises(TimeoutError):
                     helper(MagicMock())
+
+    def test_clients_close_after_create_and_delete_failures(self) -> None:
+        """Close the Kubernetes client when lifecycle setup fails."""
+        for operation, arguments in (
+            (Provider().create, (_PROPS,)),
+            (Provider().delete, ("test", _PROPS)),
+        ):
+            self.api_client.reset_mock()
+            with (
+                self.subTest(operation=operation.__name__),
+                patch.object(
+                    postgres_cluster,
+                    "PostgresLifecycle",
+                    side_effect=RuntimeError("lifecycle setup failed"),
+                ),
+                pytest.raises(RuntimeError, match="lifecycle setup failed"),
+            ):
+                operation(*arguments)
+            self.api_client.return_value.__exit__.assert_called_once()

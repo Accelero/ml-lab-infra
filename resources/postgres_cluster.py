@@ -6,8 +6,6 @@ import time
 
 import kubernetes
 import kubernetes.client
-import kubernetes.config
-import yaml
 from pulumi import Input, ResourceOptions, log
 from pulumi.dynamic import (
     CheckResult,
@@ -19,6 +17,7 @@ from pulumi.dynamic import (
     UpdateResult,
 )
 
+from resources.kubernetes_client import kubeconfig_client as _api_client
 from resources.postgres_archive import PostgresArchive
 from resources.postgres_config import (
     INPUT_FIELDS,
@@ -37,7 +36,7 @@ from resources.postgres_lifecycle import (
 _NAMESPACE = "infra"
 _CLUSTER_NAME = "postgres"
 _POLL_INTERVAL = 10
-_TIMEOUT = 600  # 10 minutes
+_TIMEOUT = 600
 _GROUP = "postgresql.cnpg.io"
 _VERSION = "v1"
 _HTTP_NOT_FOUND = 404
@@ -55,15 +54,6 @@ class S3Config:
     access_key: Input[str]
     secret_key: Input[str]
     retention_policy: str
-
-
-def _api_client(kubeconfig: str) -> kubernetes.client.ApiClient:
-    cfg = kubernetes.client.Configuration()
-    kubernetes.config.load_kube_config_from_dict(
-        yaml.safe_load(kubeconfig),
-        client_configuration=cfg,
-    )
-    return kubernetes.client.ApiClient(configuration=cfg)
 
 
 def _s3_store(props: dict) -> dict:
@@ -294,60 +284,67 @@ class _Provider(ResourceProvider):
 
     def create(self, props: dict) -> CreateResult:
         require_valid_update({}, props)
-        client = _api_client(props["kubeconfig"])
-        custom_api = kubernetes.client.CustomObjectsApi(client)
-        lifecycle = PostgresLifecycle(client, props)
-        archive = PostgresArchive.from_props(props)
-        deadline = time.monotonic() + _TIMEOUT
-        backups = archive.backups(deadline)
-        restore = bool(backups)
-        if (
-            not restore
-            and lifecycle.cluster() is None
-            and archive.objects("postgres/", deadline)
-        ):
-            msg = "Archive contains data but no completed base backup; refusing initdb."
-            raise RuntimeError(msg)
-        log.info(f"Bootstrapping cluster via {'recovery' if restore else 'initdb'}...")
-
-        manifest = _cluster_manifest(
-            props,
-            restore=restore,
-            backup_id=backups[0].identifier if backups else "",
-        )
-        crd_deadline = time.monotonic() + 120
-        while True:
-            try:
-                custom_api.create_namespaced_custom_object(
-                    _GROUP,
-                    _VERSION,
-                    _NAMESPACE,
-                    "clusters",
-                    manifest,
-                    _request_timeout=_REQUEST_TIMEOUT,
+        with _api_client(props["kubeconfig"]) as client:
+            custom_api = kubernetes.client.CustomObjectsApi(client)
+            lifecycle = PostgresLifecycle(client, props)
+            archive = PostgresArchive.from_props(props)
+            deadline = time.monotonic() + _TIMEOUT
+            backups = archive.backups(deadline)
+            restore = bool(backups)
+            if (
+                not restore
+                and lifecycle.cluster() is None
+                and archive.objects("postgres/", deadline)
+            ):
+                msg = (
+                    "Archive contains data but no completed base backup; "
+                    "refusing initdb."
                 )
-                break
-            except kubernetes.client.exceptions.ApiException as e:
-                if e.status == _HTTP_CONFLICT:
-                    log.info("Existing Postgres cluster found; waiting for readiness.")
-                    break
-                if e.status == _HTTP_NOT_FOUND and time.monotonic() < crd_deadline:
-                    log.info("CNPG CRDs not registered yet, retrying in 10s...")
-                    time.sleep(10)
-                else:
-                    raise
+                raise RuntimeError(msg)
+            log.info(
+                f"Bootstrapping cluster via {'recovery' if restore else 'initdb'}...",
+            )
 
-        _wait_cluster_ready(custom_api)
-        cluster = _require_cluster(custom_api)
-        outs = require_archive_location(cluster, props)
-        if outs["retention_policy"] != (props.get("retention_policy") or "1w"):
-            msg = "Existing Postgres retention differs from the requested policy."
-            raise RuntimeError(msg)
-        lifecycle.clear_checkpoint()
-        lifecycle.open_databases()
-        if not restore:
-            lifecycle.initial_backup(archive)
-        return CreateResult(id_="postgres-cluster", outs=outs)
+            manifest = _cluster_manifest(
+                props,
+                restore=restore,
+                backup_id=backups[0].identifier if backups else "",
+            )
+            crd_deadline = time.monotonic() + 120
+            while True:
+                try:
+                    custom_api.create_namespaced_custom_object(
+                        _GROUP,
+                        _VERSION,
+                        _NAMESPACE,
+                        "clusters",
+                        manifest,
+                        _request_timeout=_REQUEST_TIMEOUT,
+                    )
+                    break
+                except kubernetes.client.exceptions.ApiException as e:
+                    if e.status == _HTTP_CONFLICT:
+                        log.info(
+                            "Existing Postgres cluster found; waiting for readiness.",
+                        )
+                        break
+                    if e.status == _HTTP_NOT_FOUND and time.monotonic() < crd_deadline:
+                        log.info("CNPG CRDs not registered yet, retrying in 10s...")
+                        time.sleep(10)
+                    else:
+                        raise
+
+            _wait_cluster_ready(custom_api)
+            cluster = _require_cluster(custom_api)
+            outs = require_archive_location(cluster, props)
+            if outs["retention_policy"] != (props.get("retention_policy") or "1w"):
+                msg = "Existing Postgres retention differs from the requested policy."
+                raise RuntimeError(msg)
+            lifecycle.clear_checkpoint()
+            lifecycle.open_databases()
+            if not restore:
+                lifecycle.initial_backup(archive)
+            return CreateResult(id_="postgres-cluster", outs=outs)
 
     def update(self, _id: str, olds: dict, news: dict) -> UpdateResult:
         require_valid_update(olds, news)
@@ -404,36 +401,36 @@ class _Provider(ResourceProvider):
             return ReadResult(id_=id_, outs=observed, inputs=inputs)
 
     def delete(self, _id: str, props: dict) -> None:
-        client = _api_client(props["kubeconfig"])
-        custom_api = kubernetes.client.CustomObjectsApi(client)
-        core_api = kubernetes.client.CoreV1Api(client)
-        lifecycle = PostgresLifecycle(client, props)
-        archive = PostgresArchive.from_props(props)
+        with _api_client(props["kubeconfig"]) as client:
+            custom_api = kubernetes.client.CustomObjectsApi(client)
+            core_api = kubernetes.client.CoreV1Api(client)
+            lifecycle = PostgresLifecycle(client, props)
+            archive = PostgresArchive.from_props(props)
 
-        cluster = lifecycle.cluster()
-        if cluster is None or cluster.get("metadata", {}).get("deletionTimestamp"):
-            lifecycle.resume_teardown(archive)
+            cluster = lifecycle.cluster()
+            if cluster is None or cluster.get("metadata", {}).get("deletionTimestamp"):
+                lifecycle.resume_teardown(archive)
+                _wait_pod_terminated(core_api)
+                return
+
+            if props.get("cluster_uid"):
+                cluster_uid(cluster, props["cluster_uid"])
+
+            log.info("Deleting scheduled backup CR...")
+            _delete_if_exists(custom_api, "scheduledbackups", _SCHEDULED_BACKUP_NAME)
+            _wait_backups_complete(custom_api)
+
+            lifecycle.clear_checkpoint()
+            with lifecycle.quiesce():
+                deadline = time.monotonic() + _TIMEOUT
+                target = lifecycle.cutoff()
+                backup = select_backup(archive, target, deadline)
+                wait_for_archive(archive, backup, target, deadline)
+                lifecycle.save_checkpoint(backup, target)
+
+            log.info("Recovery archive verified; deleting Postgres cluster.")
+            _delete_if_exists(custom_api, "clusters", _CLUSTER_NAME)
             _wait_pod_terminated(core_api)
-            return
-
-        if props.get("cluster_uid"):
-            cluster_uid(cluster, props["cluster_uid"])
-
-        log.info("Deleting scheduled backup CR...")
-        _delete_if_exists(custom_api, "scheduledbackups", _SCHEDULED_BACKUP_NAME)
-        _wait_backups_complete(custom_api)
-
-        lifecycle.clear_checkpoint()
-        with lifecycle.quiesce():
-            deadline = time.monotonic() + _TIMEOUT
-            target = lifecycle.cutoff()
-            backup = select_backup(archive, target, deadline)
-            wait_for_archive(archive, backup, target, deadline)
-            lifecycle.save_checkpoint(backup, target)
-
-        log.info("Recovery archive verified; deleting Postgres cluster.")
-        _delete_if_exists(custom_api, "clusters", _CLUSTER_NAME)
-        _wait_pod_terminated(core_api)
 
 
 class PostgresCluster(Resource):

@@ -116,6 +116,9 @@ in progress; it lets retries recheck the archive when the primary is already gon
 
 Tailscale devices (`hub-server` and `tailscale-operator`) are deregistered from the tailnet
 automatically.
+Cleanup requests have a ten-second timeout and close their HTTP responses. Failures
+produce warnings without external error contents; they do not block Pulumi teardown.
+Check the tailnet manually when cleanup reports a failure.
 
 ## Restore after teardown
 
@@ -223,7 +226,8 @@ What each test covers:
   verifies backup objects exist in S3, spins up a temporary recovery cluster, and confirms the
   sentinel row survived the backup/restore cycle.
 - **`test_skypilot_admin_policy.py`**: connects to Postgres directly and verifies the
-  `admin_policy` key is set correctly in SkyPilot's `config_yaml` table.
+  `admin_policy` key is set correctly in SkyPilot's `config_yaml` table. Updates and
+  teardown use the provider's conditional policy writer, preserving unrelated settings.
 - **`test_skypilot_mlflow.py`**: submits a SkyPilot managed job to a RunPod GPU node. The job logs
   hyperparameters, metrics, and a model artifact to MLflow. The test verifies the run appears in
   MLflow with the expected data.

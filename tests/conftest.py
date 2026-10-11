@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import copy
 import pathlib
 import shutil
 import subprocess
@@ -14,17 +13,16 @@ from typing import TYPE_CHECKING
 
 import kubernetes
 import kubernetes.client
-import kubernetes.config
 import pytest
-import yaml
 from kubernetes.stream import stream
 
+from resources.kubernetes_client import kubeconfig_client
 from resources.postgres_exec import PostgresExec
+from resources.skypilot_config import _change_policy as change_skypilot_policy
 from resources.skypilot_config import _read_config as read_skypilot_config
-from resources.skypilot_config import _write_config as write_skypilot_config
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent
 _NAMESPACE = "infra"
@@ -39,8 +37,6 @@ _POLL_INTERVAL = 10
 _BACKUP_TIMEOUT = 600
 _RESTORE_TIMEOUT = 600
 
-# ── Private helpers ───────────────────────────────────────────────────────────
-
 
 def _pulumi_stack_output(key: str) -> str:
     result = subprocess.run(  # noqa: S603
@@ -53,33 +49,9 @@ def _pulumi_stack_output(key: str) -> str:
     return result.stdout.strip()
 
 
-def _build_k8s_client() -> kubernetes.client.ApiClient:
-    raw = _pulumi_stack_output("hub_kubeconfig")
-    cfg = kubernetes.client.Configuration()
-    kubernetes.config.load_kube_config_from_dict(
-        yaml.safe_load(raw),
-        client_configuration=cfg,
-    )
-    return kubernetes.client.ApiClient(configuration=cfg)
-
-
-def _read_skypilot_config(core_api: kubernetes.client.CoreV1Api) -> dict:
-    return read_skypilot_config(PostgresExec(core_api.api_client))
-
-
-def _write_skypilot_config(
-    core_api: kubernetes.client.CoreV1Api,
-    config: dict,
-) -> None:
-    write_skypilot_config(PostgresExec(core_api.api_client), config)
-
-
-# ── Fixtures ──────────────────────────────────────────────────────────────────
-
-
 @pytest.fixture(scope="session")
-def pulumi_config() -> object:
-    """Return a callable ``fn(key) -> str`` for pulumi config."""
+def pulumi_config() -> Callable[[str], str]:
+    """Read a Pulumi configuration value."""
 
     def _get(key: str) -> str:
         cmd = [shutil.which("pulumi") or "pulumi", "config", "get", key]
@@ -96,13 +68,14 @@ def pulumi_config() -> object:
 
 
 @pytest.fixture(scope="module")
-def k8s_client() -> kubernetes.client.ApiClient:
-    """Kubernetes ApiClient from the Pulumi stack kubeconfig (in memory)."""
-    return _build_k8s_client()
+def k8s_client() -> Generator[kubernetes.client.ApiClient]:
+    """Connect using the stack's in-memory kubeconfig."""
+    with kubeconfig_client(_pulumi_stack_output("hub_kubeconfig")) as client:
+        yield client
 
 
 @pytest.fixture(scope="module")
-def mlflow_s3_config(pulumi_config: object) -> dict[str, str]:
+def mlflow_s3_config(pulumi_config: Callable[[str], str]) -> dict[str, str]:
     """Fetch MLflow S3 credentials from Pulumi config at test runtime."""
     return {
         "endpoint": pulumi_config("mlflow:s3Endpoint"),
@@ -112,7 +85,7 @@ def mlflow_s3_config(pulumi_config: object) -> dict[str, str]:
 
 
 @pytest.fixture(scope="module")
-def backup_s3_config(pulumi_config: object) -> dict[str, str]:
+def backup_s3_config(pulumi_config: Callable[[str], str]) -> dict[str, str]:
     """Fetch S3 credentials from Pulumi config at test runtime, not collection time."""
     return {
         "endpoint": pulumi_config("backup:s3Endpoint"),
@@ -126,17 +99,12 @@ def backup_s3_config(pulumi_config: object) -> dict[str, str]:
 def sentinel_and_backup(
     k8s_client: kubernetes.client.ApiClient,
 ) -> Generator[tuple[str, str]]:
-    """Write sentinel data, trigger backup, wait for completion.
-
-    Yields (backup_cr_name, sentinel_uuid).
-    Teardown: drop sentinel table, delete Backup CR.
-    """
+    """Yield a completed backup and sentinel UUID; remove both on teardown."""
     core_api = kubernetes.client.CoreV1Api(k8s_client)
     custom_api = kubernetes.client.CustomObjectsApi(k8s_client)
 
     sentinel_uuid = str(uuid.uuid4())
 
-    # UUID is hex+dashes only — no SQL injection risk.
     create_sentinel = "CREATE TABLE IF NOT EXISTS backup_restore_sentinel (val TEXT);"
     insert_sentinel = f"INSERT INTO backup_restore_sentinel VALUES ('{sentinel_uuid}');"  # noqa: S608
     stream(
@@ -323,11 +291,15 @@ def recovery_cluster(
 @pytest.fixture(scope="module")
 def original_skypilot_config(
     k8s_client: kubernetes.client.ApiClient,
-) -> Generator[dict]:
-    """Snapshot the current config_yaml row and restore it on teardown."""
-    core_api = kubernetes.client.CoreV1Api(k8s_client)
-    snapshot = copy.deepcopy(_read_skypilot_config(core_api))
-
-    yield snapshot
-
-    _write_skypilot_config(core_api, snapshot)
+) -> Generator[dict[str, object]]:
+    """Snapshot settings and restore only the policy after the test."""
+    executor = PostgresExec(k8s_client)
+    snapshot, _value = read_skypilot_config(executor)
+    policy = snapshot.get("admin_policy")
+    if "admin_policy" in snapshot and not isinstance(policy, str):
+        msg = "The original SkyPilot admin policy must be a string."
+        raise TypeError(msg)
+    try:
+        yield snapshot
+    finally:
+        change_skypilot_policy(executor, policy)

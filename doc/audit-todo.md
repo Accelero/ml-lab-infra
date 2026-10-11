@@ -27,9 +27,18 @@ Uncrossed items remain unresolved.
    writes still verify the policy field. Verified on 2026-10-11 using mocked
    lifecycle tests and isolated PostgreSQL 17.9, including a stale update waiting
    for a competing transaction's row lock. No deployed cluster was changed.
-4. **Code cleanup.** Finish reviewing comments, docstrings, and structure;
-   remove obvious commentary and unnecessary verbosity. This is cleanup work,
-   not a confirmed additional security or correctness finding.
+4. ~~**Code cleanup.**~~ Removed redundant comments, banners, and verbose
+   docstrings. Shared in-memory Kubernetes client construction, closed provider
+   clients and HTTP responses, bounded cleanup requests, and removed secret
+   variable shadowing. Corrected the integration policy test's outdated helper
+   calls and restored only its policy during teardown. Cloud-init remains unchanged
+   because even comment edits trigger VM replacement. Larger design decisions are
+   listed below.
+   Verified on 2026-10-11 with 112 isolated tests, 182 subtests, Ruff, shell syntax
+   checks, and a comparison of 43 mocked Pulumi registrations. Resource names,
+   parents, providers, dependencies, secret outputs, and replacement options match.
+   Updated policy files and their rollout checksum are intentional; provider code
+   and source metadata were excluded from the comparison. No live stack was tested.
 5. ~~**Unpinned worker dependencies.**~~ The MLflow integration job uses a
    dedicated uv project with pinned MLflow and boto3 versions, a committed
    transitive dependency lockfile, Python 3.14.8, and uv 0.13.0. Setup and execution
@@ -38,3 +47,14 @@ Uncrossed items remain unresolved.
    SQLite-backed MLflow: parameters, metrics, and the artifact matched; an outdated
    lockfile was rejected without changing it. SkyPilot parsed the updated task.
    No live RunPod job or deployed MLflow server was tested.
+6. **Application deployment structure.** `infrastructure/apps.py` combines
+   namespaces, network policies, operators, databases, and both applications in
+   one module that registers resources on import. Proposed follow-up: separate
+   deployment modules with explicit inputs while retaining resource names,
+   parents, providers, and dependencies. Decide the structure before moving code
+   or introducing Pulumi components.
+7. **Live backup test lifecycle.** The backup and recovery fixtures clean up only
+   after reaching `yield`; setup errors can leave the sentinel table, Backup CR,
+   or recovery Cluster behind. They also use unchecked SQL exec and a fixed
+   `postgres-1` primary. Proposed follow-up: checked SQL on the discovered primary,
+   cleanup on setup failure, and a verified wait for recovery pod deletion.
