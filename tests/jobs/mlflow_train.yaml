@@ -21,12 +21,19 @@ envs:
   MLFLOW_TRACKING_URI: ""
 
 file_mounts:
-  ~/mlflow_train.py: tests/jobs/mlflow_train.py
+  ~/mlflow-test/mlflow_train.py: tests/jobs/mlflow_train.py
+  ~/mlflow-test/pyproject.toml: tests/jobs/pyproject.toml
+  ~/mlflow-test/uv.lock: tests/jobs/uv.lock
+  ~/mlflow-test/.python-version: tests/jobs/.python-version
 
 setup: |
   set -euo pipefail
-  pip install --quiet --ignore-installed mlflow boto3
+  cd "$HOME/mlflow-test"
+  curl -fsSL --connect-timeout 15 --max-time 120 https://astral.sh/uv/0.13.0/install.sh \
+    | UV_UNMANAGED_INSTALL="$PWD/.bin" timeout 180 sh
+  timeout 600 .bin/uv sync --locked --no-dev
 
 run: |
   set -euo pipefail
-  python ~/mlflow_train.py
+  cd "$HOME/mlflow-test"
+  timeout 600 .bin/uv run --locked --no-dev python mlflow_train.py

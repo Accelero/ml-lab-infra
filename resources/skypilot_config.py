@@ -1,6 +1,7 @@
 # Copyright (c) 2026 David Schmid
 """Update SkyPilot's database-persisted admin policy and verify the result."""
 
+import json
 import time
 
 import kubernetes.client
@@ -16,15 +17,25 @@ _CONFIG_KEY = "api_server_config"
 _POLL_INTERVAL = 10
 _TIMEOUT = 300
 _QUERY_TIMEOUT = 60
+_WRITE_ATTEMPTS = 5
 _TABLE_EXISTS = (
     "SELECT 1 FROM information_schema.tables "
     "WHERE table_schema = 'public' AND table_name = 'config_yaml';"
 )
-_READ_CONFIG = "SELECT value FROM public.config_yaml WHERE key = :'config_key';"
+_READ_CONFIG = (
+    "SELECT json_build_object('value', value)::text "
+    "FROM public.config_yaml WHERE key = :'config_key';"
+)
 _WRITE_CONFIG = (
+    "SET statement_timeout = '45s'; SET lock_timeout = '10s'; "
+    "UPDATE public.config_yaml SET value = :'config_value' "
+    "WHERE key = :'config_key' AND value = :'previous_value' RETURNING 1;"
+)
+_INSERT_CONFIG = (
+    "SET statement_timeout = '45s'; SET lock_timeout = '10s'; "
     "INSERT INTO public.config_yaml (key, value) "
     "VALUES (:'config_key', :'config_value') "
-    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;"
+    "ON CONFLICT (key) DO NOTHING RETURNING 1;"
 )
 
 
@@ -57,28 +68,82 @@ def _wait_for_table(executor: PostgresExec) -> None:
     raise TimeoutError(msg)
 
 
-def _read_config(executor: PostgresExec) -> dict:
-    """Distinguish an absent config row from failed SQL or invalid YAML."""
+def _read_config(executor: PostgresExec) -> tuple[dict[str, object], str | None]:
+    """Preserve exact YAML for comparison and distinguish an absent row."""
     result = executor.query(_READ_CONFIG, {"config_key": _CONFIG_KEY}, database=_DB)
     if not result:
-        return {}
+        return {}, None
     try:
-        config = yaml.safe_load(result)
+        payload = json.loads(result)
+    except json.JSONDecodeError:
+        msg = "Unexpected response while reading SkyPilot's configuration."
+        raise RuntimeError(msg) from None
+    if not isinstance(payload, dict) or set(payload) != {"value"}:
+        msg = "Unexpected response while reading SkyPilot's configuration."
+        raise RuntimeError(msg)
+    value = payload["value"]
+    if not isinstance(value, str):
+        msg = "SkyPilot's persisted configuration must contain YAML text."
+        raise TypeError(msg)
+    try:
+        config = yaml.safe_load(value)
     except yaml.YAMLError:
         msg = "SkyPilot's persisted configuration is invalid YAML."
         raise RuntimeError(msg) from None
     if not isinstance(config, dict):
         msg = "SkyPilot's persisted configuration must be a mapping."
         raise TypeError(msg)
-    return config
+    return config, value
 
 
-def _write_config(executor: PostgresExec, config: dict) -> None:
+def _write_config(
+    executor: PostgresExec,
+    config: dict[str, object],
+    previous_value: str | None,
+) -> bool:
+    """Write only the observed value, or insert only when the row is absent."""
     variables = {
         "config_key": _CONFIG_KEY,
         "config_value": yaml.safe_dump(config),
     }
-    executor.query(_WRITE_CONFIG, variables, database=_DB)
+    if previous_value is None:
+        sql = _INSERT_CONFIG
+    else:
+        sql = _WRITE_CONFIG
+        variables["previous_value"] = previous_value
+    result = executor.query(sql, variables, database=_DB)
+    if result not in {"", "1"}:
+        msg = "Unexpected response while writing SkyPilot's configuration."
+        raise RuntimeError(msg)
+    return result == "1"
+
+
+def _change_policy(executor: PostgresExec, policy: str | None) -> None:
+    """Retry stale writes while preserving other settings and verifying success."""
+    for _attempt in range(_WRITE_ATTEMPTS):
+        config, previous_value = _read_config(executor)
+        if policy is None:
+            if "admin_policy" not in config:
+                return
+            del config["admin_policy"]
+        else:
+            config["admin_policy"] = policy
+        if not _write_config(executor, config, previous_value):
+            continue
+        observed, _value = _read_config(executor)
+        if policy is None:
+            if "admin_policy" in observed:
+                msg = "SkyPilot admin policy removal could not be verified."
+                raise RuntimeError(msg)
+        elif observed.get("admin_policy") != policy:
+            msg = "SkyPilot admin policy update could not be verified."
+            raise RuntimeError(msg)
+        return
+    msg = (
+        f"SkyPilot's configuration changed during all {_WRITE_ATTEMPTS} write "
+        "attempts; policy change aborted. Retry when concurrent edits have finished."
+    )
+    raise RuntimeError(msg)
 
 
 def _apply_policy(props: dict) -> None:
@@ -89,12 +154,7 @@ def _apply_policy(props: dict) -> None:
     with _api_client(props["kubeconfig"]) as client:
         executor = PostgresExec(client)
         _wait_for_table(executor)
-        config = _read_config(executor)
-        config["admin_policy"] = policy
-        _write_config(executor, config)
-        if _read_config(executor).get("admin_policy") != policy:
-            msg = "SkyPilot admin policy update could not be verified."
-            raise RuntimeError(msg)
+        _change_policy(executor, policy)
 
 
 class _Provider(ResourceProvider):
@@ -112,14 +172,7 @@ class _Provider(ResourceProvider):
             if not _table_exists(executor):
                 log.info("SkyPilot config table is absent; no policy to remove.")
                 return
-            config = _read_config(executor)
-            if "admin_policy" not in config:
-                return
-            del config["admin_policy"]
-            _write_config(executor, config)
-            if "admin_policy" in _read_config(executor):
-                msg = "SkyPilot admin policy removal could not be verified."
-                raise RuntimeError(msg)
+            _change_policy(executor, None)
 
 
 class SkyPilotAdminPolicy(Resource):

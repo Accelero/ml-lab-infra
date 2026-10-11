@@ -171,9 +171,17 @@ Commands have a sixty-second execution limit after the exec connection is establ
 table checks use the remaining polling time when it is shorter. SQL values travel over
 stdin, and errors do not include potentially sensitive SQL output.
 
-The provider still reads and writes the whole configuration row. Avoid concurrent manual
-edits to that row during deployment; this change does not add a transaction spanning the
-configuration read and write.
+The provider compares the exact stored YAML before replacing the configuration row. If
+another writer changed or deleted it after the read, the conditional write changes nothing;
+the provider rereads and reapplies only the policy change to the latest settings. Creating
+an absent row also leaves a concurrent insertion untouched. Both application and removal
+allow at most five write attempts, then fail with a conflict error. Retry the Pulumi operation
+when concurrent edits have finished. Write statements have a 45-second statement timeout
+and a 10-second lock timeout; SQL errors and timeouts fail immediately rather than retrying.
+
+Verification still checks the policy field after a successful write. This prevents our stale
+snapshot from overwriting another writer's settings; another writer can still change the
+row after our successful write or verification.
 
 To add a new sub-policy:
 
@@ -219,6 +227,20 @@ What each test covers:
 - **`test_skypilot_mlflow.py`**: submits a SkyPilot managed job to a RunPod GPU node. The job logs
   hyperparameters, metrics, and a model artifact to MLflow. The test verifies the run appears in
   MLflow with the expected data.
+
+The MLflow test job uses its own uv project in `tests/jobs/`. Setup installs uv
+0.13.0 and syncs the committed `uv.lock` into an isolated environment; `.python-version`
+pins Python 3.14.8. Setup and execution use `--locked`, so an outdated or missing lockfile
+fails rather than resolving new dependencies on the node. This affects only the test job.
+The MLflow client version does not pin the deployed server's Helm chart or app version.
+
+To update the job dependencies, edit `tests/jobs/pyproject.toml`, then regenerate and
+review its lockfile separately from the infrastructure lockfile:
+
+```bash
+uv lock --project tests/jobs
+uv sync --project tests/jobs --locked --no-dev
+```
 
 ## Fetching the kubeconfig
 
