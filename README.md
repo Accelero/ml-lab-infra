@@ -93,8 +93,10 @@ uv run pytest tests/unit -q
 uv run pytest tests/integration --run-docker -q
 ```
 
-The integration command runs isolated PostgreSQL and local HTTP tests. Live tests
-require an explicit development stack. Draft e2e tests cover application access,
+The integration command runs isolated PostgreSQL, local HTTP, and fixture lifecycle
+tests. Live tests require an explicit development stack. `--manage-stack` builds
+and destroys a configured empty dev stack once per session and cleans its dedicated
+storage buckets. Draft e2e tests cover application access,
 a short GPU job with direct RunPod cleanup, and teardown/recovery. See
 [test commands and cleanup limits](doc/operations.md#running-tests) before opting in.
 

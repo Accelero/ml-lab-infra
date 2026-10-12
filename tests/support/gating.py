@@ -13,6 +13,7 @@ class TestOptions:
     e2e: bool = False
     gpu: bool = False
     lifecycle: bool = False
+    manage_stack: bool = False
 
     def skip_reason(self, markers: set[str]) -> str | None:
         """Return the missing opt-in before any fixture can access infrastructure."""

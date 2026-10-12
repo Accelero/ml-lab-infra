@@ -61,3 +61,27 @@ class DevStack:
         if status.get("BackendState") != "Running":
             msg = "Live tests require a connected Tailscale client."
             raise RuntimeError(msg)
+
+    def require_empty(self) -> None:
+        """Refuse ownership of a deployed stack and verify completed teardown."""
+        state = json.loads(self.pulumi("stack", "export"))
+        deployment = state.get("deployment") if isinstance(state, dict) else None
+        resources = (
+            deployment.get(
+                "resources",
+                [] if isinstance(deployment.get("manifest"), dict) else None,
+            )
+            if isinstance(deployment, dict)
+            else None
+        )
+        if (
+            not isinstance(resources, list)
+            or any(
+                not isinstance(resource, dict)
+                or resource.get("type") != "pulumi:pulumi:Stack"
+                for resource in resources
+            )
+            or deployment.get("pending_operations")
+        ):
+            msg = "Managed tests require a configured stack without deployed resources."
+            raise RuntimeError(msg)

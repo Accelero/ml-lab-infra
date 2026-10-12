@@ -2,7 +2,10 @@
 """Verify external tests cannot run without their opt-ins."""
 
 import unittest
+from unittest.mock import MagicMock
 
+import pytest
+from support import stack_fixtures
 from support.gating import TestOptions as Options
 
 from .helpers import expect_equal
@@ -42,3 +45,21 @@ class TestGatingTests(unittest.TestCase):
             options.skip_reason({"live", "e2e", "lifecycle"}) is not None,
             expected=True,
         )
+
+    def test_managed_session_requires_an_explicit_stack(self) -> None:
+        """Stack creation and bucket cleanup cannot use the workspace default."""
+        config = MagicMock(spec=pytest.Config)
+        options = {"--manage-stack": True}
+        config.getoption.side_effect = lambda name, **_kwargs: options.get(name)
+        with pytest.raises(pytest.UsageError, match="--dev-stack"):
+            stack_fixtures.pytest_collection_modifyitems(config, [])
+
+    def test_parallel_live_stack_mutation_is_rejected(self) -> None:
+        """A session fixture per xdist worker would create competing owners."""
+        config = MagicMock(spec=pytest.Config)
+        options = {"--dev-stack": "dev", "numprocesses": 2}
+        config.getoption.side_effect = lambda name, **_kwargs: options.get(name)
+        item = MagicMock(spec=pytest.Item)
+        item.get_closest_marker.return_value = pytest.mark.live.mark
+        with pytest.raises(pytest.UsageError, match="sequentially"):
+            stack_fixtures.pytest_collection_modifyitems(config, [item])

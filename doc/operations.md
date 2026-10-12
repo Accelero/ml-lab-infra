@@ -224,10 +224,10 @@ modules that are not exercised by local tests; it is not an e2e coverage score.
 
 ### Development-stack prerequisites
 
-Live tests require an already deployed, disposable development stack with its
-own database archive and artifact buckets and an appropriately isolated tailnet.
-They must not share production state or archives. Authenticate Pulumi and connect
-the runner to Tailscale first. Every Pulumi invocation includes `--stack NAME`;
+Live tests require a configured, disposable development stack with its own
+database archive and artifact buckets, a separate Hetzner project, and an isolated
+tailnet. They must not share production state or archives. Authenticate Pulumi and
+connect the runner to Tailscale first. Every Pulumi invocation includes `--stack NAME`;
 preflight resolves that stack and requires the local Tailscale client to be
 running. Kubeconfigs and credentials stay in memory.
 
@@ -240,6 +240,60 @@ uv run pytest tests/e2e/test_applications.py --dev-stack dev --run-e2e -v
 uv run pytest tests/e2e/test_skypilot_mlflow.py --dev-stack dev --run-e2e --run-gpu -v
 uv run pytest tests/e2e/test_stack_lifecycle.py --dev-stack dev --run-e2e --run-lifecycle -v
 ```
+
+### Fixture scopes and fresh managed runs
+
+`dev_stack` is session-scoped. Without `--manage-stack`, it uses an already
+deployed development stack and leaves that deployment running. Kubernetes clients,
+backup probes, recovery clusters, policy snapshots, MLflow experiments, and GPU
+invocations are function-scoped. Their teardown completes before the stack's
+session teardown. Each test reads the current kubeconfig so clients do not survive
+a destroy/recreate cycle. Live tests reject pytest-xdist parallel execution because
+the fixed stack and service identities are shared.
+
+To let pytest build and destroy the whole stack once per run, initialize/configure
+the dev stack and pre-create its two empty dedicated buckets, then opt in:
+
+```bash
+uv run pytest tests/integration tests/e2e --dev-stack dev --manage-stack --run-e2e --run-gpu --run-lifecycle -v
+```
+
+Omit `--run-gpu` or `--run-lifecycle` to skip those tests. The managed fixture:
+
+1. Refuses stacks with deployed resources or pending operations, and buckets with
+   current objects, old versions, delete markers, or incomplete multipart uploads.
+2. Claims each empty bucket with a unique ownership marker using a conditional
+   PUT, previews, then deploys once. Cleanup is registered before deployment.
+3. Keeps the database archive intact across the recovery test's intermediate
+   destroy/recreate operation.
+4. After dependent fixtures finish, destroys the stack and checks its exported
+   state is empty before purging either bucket.
+5. Deletes owned objects, all versions and delete markers, and incomplete uploads;
+   removes the ownership marker last; then verifies both buckets are empty.
+
+The externally created bucket containers and the configured Pulumi stack remain
+available for the next run. Managed mode refuses an existing deployment; it never
+empties an active stack's archive at startup. If final stack deletion fails, the
+archive and ownership markers remain available for recovery. Bucket cleanup errors
+fail teardown, and both buckets get a cleanup attempt. `cleanup.json` under pytest's
+`stack-session*` temporary directory records the stack, bucket names, ownership ID,
+and whether cleanup was verified, without credentials or stack state.
+
+Preview, deployment, and destruction have 600, 1800, and 1200 second command limits.
+S3 cleanup has a 600 second loop deadline per bucket, with 5 second connect and
+15 second read limits and one SDK attempt per request. Managed live tests apply
+pytest's function timeout to test bodies throughout the session; fixture operations retain their own
+explicit deadlines so a short assertion timeout cannot interrupt session teardown.
+GPU fixture provisioning and termination remain bounded by the independent lease.
+The session fixture cannot survive loss of the runner host; the journal supports
+manual recovery, and the GPU watchdog still handles pytest process death.
+
+Storage credentials for these tests need version listing/deletion and multipart
+listing/abort permissions as well as normal object access. S3-compatible providers
+must support conditional PUT and the version/multipart APIs. See
+[S3 version inventories](https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectVersions.html)
+and [version deletion](https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteObjects.html).
+Provider compatibility still needs development-stack validation.
 
 ### Live integration and draft e2e coverage
 
@@ -257,7 +311,8 @@ uv run pytest tests/e2e/test_stack_lifecycle.py --dev-stack dev --run-e2e --run-
 - **`e2e/test_skypilot_mlflow.py`** provisions one cheap RunPod GPU through SkyPilot,
   checks that CUDA sees exactly one GPU, and writes MLflow parameters, metrics, and
   an artifact from the worker. It checks the exact invocation's finished run and
-  downloaded bytes, and verifies hardware release directly through RunPod.
+  downloaded bytes, and verifies hardware release directly through RunPod. The GPU
+  fixture finishes hardware cleanup before returning the invocation to assertions.
 - **`e2e/test_stack_lifecycle.py`** writes application data, previews, destroys,
   and recreates the development stack. It checks recovered PostgreSQL identity,
   persisted admin policy, MLflow data/artifacts, fresh writes, and a preview without
@@ -266,10 +321,12 @@ uv run pytest tests/e2e/test_stack_lifecycle.py --dev-stack dev --run-e2e --run-
 
 The new live fixtures and e2e tests are drafts pending validation on a development
 stack. The local suite does not prove deployed chart compatibility, tailnet access,
-RunPod availability, cloud cleanup, or full recovery behavior. Empty-archive first
-deployment, managed-job history recovery, and negative network-policy checks remain
-future e2e additions. MLflow experiment cleanup soft-deletes metadata; artifact
-objects remain in the development bucket, so use a bucket lifecycle for test data.
+RunPod availability, cloud cleanup, or full recovery behavior. Managed mode starts
+from an empty archive. Managed-job history recovery and negative network-policy
+checks remain future e2e additions. MLflow experiment fixtures soft-delete metadata
+and physically remove the exact experiment's S3 artifact directory, including old
+versions and unfinished uploads. Unexpected artifact locations fail closed. A
+managed run removes all test database metadata with final stack destruction.
 
 ### GPU budget and cleanup
 

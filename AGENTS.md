@@ -45,7 +45,8 @@ jobs to RunPod.
 - `tests/e2e/`: opt-in application, paid GPU, and destructive stack-recovery tests.
 - `tests/support/`: bounded commands, development-stack access, recovery fixtures,
   and the independent RunPod cleanup watchdog. GPU payloads live in `tests/jobs/`.
-  Shared fixtures and opt-in gating live in `tests/conftest.py`.
+  Shared fixtures live in `tests/conftest.py`; session ownership and opt-in gating
+  live in `tests/support/stack_fixtures.py`.
 - `doc/`: [architecture](doc/architecture.md), [configuration](doc/configuration.md),
   [setup](doc/setup.md), and [operations](doc/operations.md). Read the relevant
   guide before changing that area; verify behavior against the implementation.
@@ -158,6 +159,10 @@ uv run pytest tests/integration -m live --dev-stack dev -v
 E2e tests additionally require `--run-e2e`; paid GPU and destructive lifecycle
 tests require `--run-gpu` and `--run-lifecycle`, respectively. See
 `doc/operations.md#running-tests` for targeted commands and cleanup requirements.
+`--manage-stack` builds and destroys one configured empty dev stack per session and
+purges its claimed empty-at-start buckets only after verified final teardown.
+Without that option, tests reuse an existing deployment. Managed mode requires
+dedicated buckets and must never adopt a deployed stack or a nonempty archive.
 Do not enable live options merely to collect or validate draft tests. Ensure
 cleanup completes and report skipped live checks. A documentation-only change
 does not require live infrastructure tests.

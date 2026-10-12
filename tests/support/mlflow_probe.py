@@ -18,6 +18,15 @@ class RunProbe:
     content: str
 
 
+@dataclass(frozen=True)
+class RecoveryProbe:
+    """Keep the application data and database identity across stack recreation."""
+
+    run: RunProbe
+    system_identifier: str
+    policy: str | None
+
+
 def write_run(
     client: MlflowClient,
     experiment: str,

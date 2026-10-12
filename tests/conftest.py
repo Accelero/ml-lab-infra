@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 
 import pytest
 from support.backups import BackupProbe, ClusterExec, backup_probe, restored_cluster
-from support.gating import TestOptions
 from support.stack import DevStack, SecretValues
 
 from resources.kubernetes_client import kubeconfig_client
@@ -22,47 +21,7 @@ if TYPE_CHECKING:
     import kubernetes.client
 
 
-def pytest_addoption(parser: pytest.Parser) -> None:
-    """Require explicit development-stack and spending opt-ins."""
-    group = parser.getgroup("ml-lab tests")
-    group.addoption("--dev-stack", help="Disposable development stack for live tests")
-    for option in ("docker", "e2e", "gpu", "lifecycle"):
-        group.addoption(f"--run-{option}", action="store_true", default=False)
-
-
-def pytest_collection_modifyitems(
-    config: pytest.Config,
-    items: list[pytest.Item],
-) -> None:
-    """Skip external tests before their fixtures run."""
-    options = TestOptions(
-        stack=config.getoption("--dev-stack"),
-        docker=config.getoption("--run-docker"),
-        e2e=config.getoption("--run-e2e"),
-        gpu=config.getoption("--run-gpu"),
-        lifecycle=config.getoption("--run-lifecycle"),
-    )
-    if (options.e2e or options.gpu or options.lifecycle) and not options.stack:
-        msg = "Live e2e options require --dev-stack NAME."
-        raise pytest.UsageError(msg)
-    if (options.gpu or options.lifecycle) and not options.e2e:
-        msg = "GPU and lifecycle tests also require --run-e2e."
-        raise pytest.UsageError(msg)
-    for item in items:
-        reason = options.skip_reason({marker.name for marker in item.iter_markers()})
-        if reason:
-            item.add_marker(pytest.mark.skip(reason=reason))
-
-
-@pytest.fixture(scope="session")
-def dev_stack(request: pytest.FixtureRequest) -> DevStack:
-    """Verify the explicitly requested stack and the runner's tailnet connection."""
-    name = request.config.getoption("--dev-stack")
-    if not name:
-        pytest.fail("Live tests require --dev-stack NAME.")
-    stack = DevStack(name)
-    stack.preflight()
-    return stack
+pytest_plugins = ["support.stack_fixtures"]
 
 
 @pytest.fixture(scope="session")
@@ -71,7 +30,7 @@ def pulumi_config(dev_stack: DevStack) -> Callable[[str], str]:
     return dev_stack.config
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def k8s_client(dev_stack: DevStack) -> Generator[kubernetes.client.ApiClient]:
     """Connect using the stack's in-memory kubeconfig."""
     with kubeconfig_client(dev_stack.output("hub_kubeconfig")) as client:
@@ -103,7 +62,7 @@ def backup_s3_config(pulumi_config: Callable[[str], str]) -> dict[str, str]:
     )
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def sentinel_and_backup(
     k8s_client: kubernetes.client.ApiClient,
     backup_s3_config: dict[str, str],
@@ -113,7 +72,7 @@ def sentinel_and_backup(
         yield probe
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def recovery_cluster(
     k8s_client: kubernetes.client.ApiClient,
     backup_s3_config: dict[str, str],
@@ -128,7 +87,7 @@ def recovery_cluster(
         yield executor
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def original_skypilot_config(
     k8s_client: kubernetes.client.ApiClient,
 ) -> Generator[dict[str, object]]:
@@ -140,6 +99,6 @@ def original_skypilot_config(
         msg = "The original SkyPilot admin policy must be a string."
         raise TypeError(msg)
     try:
-        yield snapshot
+        yield SecretValues(snapshot)
     finally:
         change_skypilot_policy(executor, policy)
