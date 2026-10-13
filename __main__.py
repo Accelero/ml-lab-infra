@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Register the ML lab infrastructure."""
 
 import infrastructure.apps

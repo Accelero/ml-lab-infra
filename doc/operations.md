@@ -308,6 +308,8 @@ Provider compatibility still needs development-stack validation.
   and conditional database updates while restoring only the original policy field.
 - **`e2e/test_applications.py`** checks the deployed SkyPilot API and a complete
   MLflow parameter, metric-history, and artifact-content round trip over Tailscale.
+  The shared MLflow fixture waits for HTTPS ingress readiness for up to 120 seconds
+  of retries, with a ten-second request timeout, before creating test metadata.
 - **`e2e/test_skypilot_mlflow.py`** provisions one cheap RunPod GPU through SkyPilot,
   checks that CUDA sees exactly one GPU, and writes MLflow parameters, metrics, and
   an artifact from the worker. It checks the exact invocation's finished run and
@@ -330,14 +332,19 @@ managed run removes all test database metadata with final stack destruction.
 
 ### GPU budget and cleanup
 
-The job requests one GPU from a small inexpensive candidate list, a 20 GiB disk,
-and `max_hourly_cost: 0.35` (USD/hour). Setup and workload limits are 240 and 120
-seconds. No provisioning retries are requested; SkyPilot idle termination is also
-enabled. See the [SkyPilot resource budget field](https://docs.skypilot.ai/en/latest/reference/yaml-spec.html#resources-max-hourly-cost).
+The job requests one GPU from the candidate list in `tests/jobs/mlflow_train.yaml`,
+a 20 GiB disk, and `max_hourly_cost: 0.50` (USD/hour). Its `infra` setting restricts
+provisioning to Iceland's `EUR-IS-1` data center (`runpod/IS/EUR-IS-1`); SkyPilot
+does not fall back to another country or data center. The candidates use SkyPilot
+accelerator names, which its provisioner maps to RunPod GPU type IDs. SkyPilot
+filters out candidates whose catalog prices exceed the cap.
+Setup and workload limits are 240 and 120 seconds. No provisioning retries are
+requested; SkyPilot idle termination is also enabled. See the
+[SkyPilot resource budget field](https://docs.skypilot.ai/en/latest/reference/yaml-spec.html#resources-max-hourly-cost).
 
 An independent watchdog arms before launch. Its default lease is 600 seconds for
 provisioning plus execution, then up to 180 seconds for cleanup. Lease validation
-rejects longer runtime and rates above $0.50/hour; the test uses $0.35/hour. The
+rejects longer runtime and rates above $0.50/hour; the test uses $0.50/hour. The
 watchdog checks the provider's reported price and rejects unknown/over-budget
 prices, multiple GPUs or pods, and network volumes. The hourly price is a rate
 limit, not a total invoice cap; provider billing and storage charges still apply.
@@ -356,13 +363,23 @@ the cleanup journal and command failure output.
 The watchdog continues after pytest timeout or parent-process exit. It writes
 `runpod-cleanup.json` in the test's temporary directory with observed pod IDs,
 cleanup status, and a redacted failure reason. An unverified release fails the
-test. No local process can guarantee release during a provider outage or loss of
+test. Worker failures also write `sky-worker-error.json` or
+`sky-worker-cleanup-error.json` with the failure phase, exception class, and a
+categorized reason. These summaries omit raw error text and request data.
+No local process can guarantee release during a provider outage or loss of
 the runner host; in that case, use the journal's IDs to terminate the pods through
 RunPod directly and verify their absence. During initial development-stack
 validation, confirm the installed SkyPilot version's pod naming and cancellation
 behavior, and check the RunPod console after both a successful job and a forced
 timeout. A dedicated test RunPod account/key keeps recovery from affecting other
 workloads.
+
+Repeated managed runs also recreate the Tailscale HTTPS proxies and their
+certificate caches. Let’s Encrypt limits new certificates for the same hostname
+set to five per seven days. If proxy logs report an ACME rate limit, wait until
+the reported retry time before rebuilding the same service identities. HTTPS
+readiness retries cannot bypass this limit, and the GPU fixture cannot start
+until MLflow is reachable. See [Let’s Encrypt certificate limits](https://letsencrypt.org/docs/rate-limits/#new-certificates-per-exact-set-of-identifiers).
 
 The MLflow test job uses its own uv project in `tests/jobs/`. Setup installs uv
 0.13.0 and syncs the committed `uv.lock` into an isolated environment; `.python-version`

@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Create Kubernetes clients from in-memory kubeconfigs."""
 
 import kubernetes.client

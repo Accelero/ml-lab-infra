@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Cheap development-stack acceptance tests without renting a GPU."""
 
 import sys
@@ -37,7 +36,7 @@ def test_skypilot_api(dev_stack: DevStack) -> None:
             (
                 "import os,sys; "
                 "os.environ['SKYPILOT_API_SERVER_ENDPOINT']=sys.argv[1]; "
-                "import sky; sky.get(sky.status(refresh=False))"
+                "import sky; sky.get(sky.status())"
             ),
             endpoint,
         ],

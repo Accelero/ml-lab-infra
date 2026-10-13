@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Helm releases and Kubernetes resources for the hub cluster."""
 
 import hashlib

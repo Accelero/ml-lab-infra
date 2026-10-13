@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Deregister Tailscale devices during Pulumi teardown."""
 
 import base64

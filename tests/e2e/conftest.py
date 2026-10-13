@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Configure bounded application requests and isolated MLflow experiments."""
 
 import asyncio
@@ -12,7 +11,7 @@ from mlflow.tracking import MlflowClient
 from support.experiments import owned_experiment
 from support.gpu import run_gpu_job
 from support.managed_stack import recreated_stack as stack_recreation
-from support.mlflow_probe import RecoveryProbe, write_run
+from support.mlflow_probe import RecoveryProbe, wait_for_tracking_server, write_run
 from support.process import REPO_ROOT
 from support.runpod_watchdog import Lease
 from support.stack import SecretValues
@@ -47,7 +46,9 @@ def mlflow_client(
     }.items():
         monkeypatch.setenv(key, value)
     tailnet = dev_stack.config("tailscale:tailnet")
-    return MlflowClient(tracking_uri=f"https://mlflow.{tailnet}")
+    endpoint = f"https://mlflow.{tailnet}"
+    wait_for_tracking_server(endpoint)
+    return MlflowClient(tracking_uri=endpoint)
 
 
 @pytest.fixture

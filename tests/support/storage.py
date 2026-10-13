@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Claim empty test buckets and remove all owned objects, versions, and uploads."""
 
 import time

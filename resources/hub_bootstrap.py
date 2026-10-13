@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Explain recovery from a hub bootstrap key or connectivity failure."""
 
 import shlex

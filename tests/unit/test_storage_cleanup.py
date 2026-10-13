@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Verify storage cleanup against the actual boto3 request model."""
 
 import io

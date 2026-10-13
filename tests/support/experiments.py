@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Own one MLflow experiment and physically remove its S3 artifacts."""
 
 import uuid

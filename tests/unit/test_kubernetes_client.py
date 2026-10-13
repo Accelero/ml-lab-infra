@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Check in-memory kubeconfig loading without Kubernetes access."""
 
 import unittest

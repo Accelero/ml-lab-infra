@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Independently enforce a GPU lease and verify termination."""
 
 import json
@@ -27,7 +26,7 @@ class Lease:
 
     cluster: str
     lifetime: float = 600
-    hourly_limit: Decimal = Decimal("0.35")
+    hourly_limit: Decimal = MAX_HOURLY_COST
     cleanup_limit: float = 180
     quiet_period: float = 60
     poll_interval: float = 2
@@ -165,7 +164,7 @@ def main() -> None:
     lease = Lease(
         cluster=configuration["cluster"],
         lifetime=configuration.get("lifetime", 600),
-        hourly_limit=Decimal(str(configuration.get("hourly_limit", "0.35"))),
+        hourly_limit=Decimal(str(configuration.get("hourly_limit", MAX_HOURLY_COST))),
         cleanup_limit=configuration.get("cleanup_limit", 180),
         quiet_period=configuration.get("quiet_period", 60),
         poll_interval=configuration.get("poll_interval", 2),

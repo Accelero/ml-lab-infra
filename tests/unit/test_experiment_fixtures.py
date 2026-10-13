@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Verify exact experiment artifact cleanup on setup and test failure."""
 
 from unittest.mock import MagicMock

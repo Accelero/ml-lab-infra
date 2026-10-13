@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Draft destructive recovery acceptance for a disposable development stack."""
 
 from typing import TYPE_CHECKING

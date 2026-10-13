@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Keep chart selection explicit and reject accidental floating constraints."""
 
 import unittest

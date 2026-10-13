@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Keep hub recovery hints accurate and independent of secret property values."""
 
 import shlex

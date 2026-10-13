@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Keep infrastructure and paid test operations explicitly opt-in."""
 
 from dataclasses import dataclass

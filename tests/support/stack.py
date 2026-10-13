@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Read development-stack secrets without writing or printing them."""
 
 import json

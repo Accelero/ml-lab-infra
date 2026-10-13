@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Create uniquely owned backup probes and clean up on every exit path."""
 
 import time

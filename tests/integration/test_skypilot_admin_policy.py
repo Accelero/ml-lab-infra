@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 # ruff: noqa: S101  # assert is idiomatic in pytest
 """Verify policy updates preserve other settings using the production SQL helpers."""
 

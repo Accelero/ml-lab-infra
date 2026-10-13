@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Exercise readiness, backup transitions, and teardown checkpoints."""
 
 import json

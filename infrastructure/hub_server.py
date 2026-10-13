@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Provision the hub VM and Tailscale bootstrap key."""
 
 import hashlib

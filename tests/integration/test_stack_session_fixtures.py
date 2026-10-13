@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Run actual pytest sessions with fake cloud transports to verify fixture order."""
 
 import json

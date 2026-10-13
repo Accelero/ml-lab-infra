@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Start a disposable PostgreSQL container for SQL integration tests."""
 
 import shutil

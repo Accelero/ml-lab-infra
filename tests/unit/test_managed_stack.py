@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Check disposable stack ownership and cleanup across setup and test failures."""
 
 import json

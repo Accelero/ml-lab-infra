@@ -1,15 +1,16 @@
-# Copyright (c) 2026 David Schmid
 """Ensure GPU provisioning exceptions still cancel requests and verify RunPod."""
 
 import asyncio
 import json
 import pathlib
+import sys
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from support import gpu
+from support.process import command
 from support.runpod_watchdog import Lease
 from support.stack import SecretText, SecretValues, secret_json
 
@@ -20,6 +21,26 @@ CLUSTER = "mltest-0123456789abcdef"
 
 class GPUOrchestrationTests(unittest.TestCase):
     """Exercise finalizers without launching SkyPilot or contacting RunPod."""
+
+    def test_worker_initializes_sdk_with_the_remote_endpoint(self) -> None:
+        """A fresh worker must not cache localhost before reading its endpoint."""
+        endpoint = "https://skypilot.test.invalid"
+        observed = command(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; "
+                    "from support.gpu_worker import _sky_client; "
+                    "_sky_client(sys.argv[1]); "
+                    "from sky.server import common; "
+                    "print(common.get_server_url())"
+                ),
+                endpoint,
+            ],
+            timeout=30,
+        )
+        expect_equal(observed, endpoint)
 
     def test_launch_timeout_still_requests_cleanup_and_waits_for_watchdog(self) -> None:
         """A timeout before a job ID exists cannot bypass the direct API proof."""

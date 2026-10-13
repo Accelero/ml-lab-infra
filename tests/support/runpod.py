@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Read and terminate test-owned RunPod pods through the REST API."""
 
 import json

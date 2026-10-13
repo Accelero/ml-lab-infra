@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Exercise the SQL execution boundary shared by lifecycle and SkyPilot providers."""
 
 import base64

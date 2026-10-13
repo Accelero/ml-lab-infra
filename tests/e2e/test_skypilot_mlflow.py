@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Draft one-node GPU acceptance with direct RunPod termination verification."""
 
 import pathlib

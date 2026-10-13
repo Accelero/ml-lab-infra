@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Verify external tests cannot run without their opt-ins."""
 
 import unittest

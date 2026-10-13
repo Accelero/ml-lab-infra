@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Exercise integration-test policy setup and teardown without a cluster."""
 
 import json

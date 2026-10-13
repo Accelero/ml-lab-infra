@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 # ruff: noqa: INP001  # tests/ is not a package
 """Log test parameters, metrics, and an artifact to MLflow."""
 

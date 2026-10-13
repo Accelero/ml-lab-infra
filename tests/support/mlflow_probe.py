@@ -1,13 +1,50 @@
-# Copyright (c) 2026 David Schmid
 """Write and read application data through the MLflow client API."""
 
+import math
 import pathlib
+import time
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import requests
+
 if TYPE_CHECKING:
     from mlflow.tracking import MlflowClient
+
+
+def wait_for_tracking_server(endpoint: str, *, timeout: float = 120) -> None:
+    """Wait for new HTTPS ingress before creating experiment metadata."""
+    if not math.isfinite(timeout) or timeout <= 0:
+        msg = "MLflow readiness requires a finite positive timeout."
+        raise ValueError(msg)
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            msg = "MLflow HTTPS ingress did not become ready before its deadline."
+            raise TimeoutError(msg)
+        try:
+            with requests.get(
+                f"{endpoint.rstrip('/')}/health",
+                timeout=min(10, remaining),
+                allow_redirects=False,
+            ) as response:
+                if response.status_code == requests.codes.ok:
+                    return
+                if (
+                    response.status_code < requests.codes.server_error
+                    and response.status_code != requests.codes.not_found
+                ):
+                    msg = (
+                        f"MLflow HTTPS readiness failed (HTTP {response.status_code})."
+                    )
+                    raise RuntimeError(msg)
+        except requests.exceptions.ConnectionError, requests.exceptions.Timeout:
+            pass
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(2, remaining))
 
 
 @dataclass(frozen=True)

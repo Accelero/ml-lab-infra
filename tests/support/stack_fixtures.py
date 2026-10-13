@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Gate live operations and provide one stack per pytest session."""
 
 from typing import TYPE_CHECKING

@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Inject Tailscale access through the registered SkyPilot admin policies."""
 
 import json

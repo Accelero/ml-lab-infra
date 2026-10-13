@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Check Tailscale request handling without network calls."""
 
 import json

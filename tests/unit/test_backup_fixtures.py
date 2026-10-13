@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Verify live backup fixtures release resources after partial setup failures."""
 
 import unittest

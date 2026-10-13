@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """K3s channel resolution without network calls or Pulumi resource registration."""
 
 import unittest

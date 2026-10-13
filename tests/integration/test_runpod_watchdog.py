@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Exercise real HTTP and watchdog subprocesses against a local RunPod API double."""
 
 import json

@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Configure tailnet grants and workload OAuth clients."""
 
 import json

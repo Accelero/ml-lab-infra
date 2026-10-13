@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Launch one cheap GPU under a detached RunPod cleanup watchdog."""
 
 import asyncio
@@ -112,4 +111,9 @@ async def run_gpu_job(
                 raise RuntimeError(msg)
             if not result.get("pods"):
                 msg = "GPU watchdog never observed a test-owned pod."
+                worker_error = directory / "sky-worker-error.json"
+                if await asyncio.to_thread(worker_error.exists):
+                    msg += (
+                        f" Inspect {worker_error} for the failure phase and category."
+                    )
                 raise RuntimeError(msg)

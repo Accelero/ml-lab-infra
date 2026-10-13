@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Assertions compatible with the repository's ban on assert statements."""
 
 import pytest

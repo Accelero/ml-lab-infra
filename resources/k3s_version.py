@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Resolve official K3s channels to validated installation releases."""
 
 import http.client

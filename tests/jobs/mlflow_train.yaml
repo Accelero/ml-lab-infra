@@ -3,8 +3,8 @@
 name: mlflow-integration-test
 
 resources:
-  infra: runpod
-  max_hourly_cost: 0.35
+  infra: runpod/IS/EUR-IS-1
+  max_hourly_cost: 0.50
   disk_size: 20
   any_of:
     - accelerators: RTX3070:1
@@ -12,6 +12,13 @@ resources:
     - accelerators: RTX3090:1
     - accelerators: RTXA2000:1
     - accelerators: RTXA4000:1
+    - accelerators: RTXA4500:1
+    - accelerators: RTX4000-Ada:1
+    - accelerators: RTX2000-Ada:1
+    - accelerators: RTXA5000:1
+    - accelerators: A40:1
+    - accelerators: L4:1
+    - accelerators: RTXA6000:1
 
 num_nodes: 1
 

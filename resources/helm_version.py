@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Validate chart pins and delegate stable release selection to Helm."""
 
 import semver

@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Execute test subprocesses with deadlines and redacted failures."""
 
 import asyncio

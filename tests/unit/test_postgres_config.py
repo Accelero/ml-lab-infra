@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Exercise updates, identity checks, and Pulumi refresh without live services."""
 
 import copy

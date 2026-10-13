@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Verify GPU ownership, cost limits, inventory validation, and cleanup retries."""
 
 import json
@@ -172,6 +171,20 @@ class InventoryTests(unittest.TestCase):
 
 class SweepTests(unittest.TestCase):
     """Require repeated observed absence after successful termination requests."""
+
+    def test_default_lease_allows_fifty_cents_and_terminates_above_it(self) -> None:
+        """Provider prices at the cap run; one cent above triggers cleanup."""
+        for price, terminate in (("0.50", False), ("0.51", True)):
+            with self.subTest(price=price):
+                api = MagicMock()
+                api.pods.return_value = [pod(hourly_cost=Decimal(price))]
+                state = CleanupState()
+                expect_equal(state.sweep(api, Lease(CLUSTER)), expected=False)
+                expect_equal(state.violation is not None, expected=terminate)
+                if terminate:
+                    api.delete.assert_called_once_with("owned")
+                else:
+                    api.delete.assert_not_called()
 
     def test_delete_is_followed_by_a_fresh_inventory_and_quiet_period(self) -> None:
         """A stopped or still-visible pod cannot count as cleaned."""

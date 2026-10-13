@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Check a fresh stack's actual state export using only a local Pulumi backend."""
 
 import json

@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Update SkyPilot's database-persisted admin policy and verify the result."""
 
 import json

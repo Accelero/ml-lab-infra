@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Exercise policy SQL and connection gates on PostgreSQL 17."""
 
 import json

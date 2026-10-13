@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Verify the exact base backup and subsequent WAL recover both sentinels."""
 
 from typing import TYPE_CHECKING

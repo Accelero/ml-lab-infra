@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Check subprocess redaction and forced cleanup of commands that overrun."""
 
 import os

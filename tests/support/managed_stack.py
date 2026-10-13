@@ -1,4 +1,3 @@
-# Copyright (c) 2026 David Schmid
 """Own one disposable stack and its persisted state for a pytest session."""
 
 import json
